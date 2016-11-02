@@ -10,6 +10,9 @@
 
 #include "kbdhid.h"
 
+//子函数
+//使用回调把读键传递到类设备对象
+//为什么要升IRQL？
 VOID
 KbdHid_DispatchInputData(
     IN PKBDHID_DEVICE_EXTENSION DeviceExtension,
@@ -64,7 +67,7 @@ KbdHid_InsertScanCodes(
         /* init input data */
         RtlZeroMemory(&InputData, sizeof(KEYBOARD_INPUT_DATA));
 
-        /* use keyboard unit id */
+        /* use keyboard unit id */ //unit id意思是哪个键盘读来的
         InputData.UnitId = DeviceExtension->KeyboardTypematic.UnitId;
 
         if (NewScanCodes[Index] & 0x80)
@@ -91,7 +94,11 @@ KbdHid_InsertScanCodes(
     return TRUE;
 }
 
-
+//主要是调用一下函数对report进行处理，不过在高IRQL中执行有点浪费吧
+//HidP_GetUsagesEx
+//HidP_UsageAndPageListDifference
+//HidP_TranslateUsageAndPagesToI8042ScanCodes
+//KbdHid_InitiateRead
 NTSTATUS
 NTAPI
 KbdHid_ReadCompletion(
@@ -121,6 +128,7 @@ KbdHid_ReadCompletion(
         DeviceExtension->StopReadReport = FALSE;
 
         /* signal completion event */
+		//为了同步KbdHid_Close
         KeSetEvent(&DeviceExtension->ReadCompletionEvent, 0, 0);
         return STATUS_MORE_PROCESSING_REQUIRED;
     }
@@ -136,12 +144,12 @@ KbdHid_ReadCompletion(
 
     /* get current usages */
     ButtonLength = DeviceExtension->UsageListLength;
-    Status = HidP_GetUsagesEx(HidP_Input,
+    Status = HidP_GetUsagesEx(HidP_Input, //枚举
                               HIDP_LINK_COLLECTION_UNSPECIFIED,
-                              DeviceExtension->CurrentUsageList,
-                              &ButtonLength,
+                              DeviceExtension->CurrentUsageList, //输入输出，ButtonList
+                              &ButtonLength,                     //输入输出，ButtonList长度（element数）
                               DeviceExtension->PreparsedData,
-                              DeviceExtension->Report,
+                              DeviceExtension->Report, //待处理的report
                               DeviceExtension->ReportLength);
     ASSERT(Status == HIDP_STATUS_SUCCESS);
 
@@ -150,8 +158,8 @@ KbdHid_ReadCompletion(
     /* get usage difference */
     Status = HidP_UsageAndPageListDifference(DeviceExtension->PreviousUsageList,
                                              DeviceExtension->CurrentUsageList,
-                                             DeviceExtension->BreakUsageList,
-                                             DeviceExtension->MakeUsageList,
+                                             DeviceExtension->BreakUsageList, //out
+                                             DeviceExtension->MakeUsageList,  //out
                                              DeviceExtension->UsageListLength);
     ASSERT(Status == HIDP_STATUS_SUCCESS);
 
@@ -161,25 +169,25 @@ KbdHid_ReadCompletion(
                   sizeof(USAGE_AND_PAGE) * DeviceExtension->UsageListLength);
 
     /* translate break usage list */
-    HidP_TranslateUsageAndPagesToI8042ScanCodes(DeviceExtension->BreakUsageList,
-                                                DeviceExtension->UsageListLength,
-                                                HidP_Keyboard_Break,
-                                                &DeviceExtension->ModifierState,
-                                                KbdHid_InsertScanCodes,
-                                                DeviceExtension);
+    HidP_TranslateUsageAndPagesToI8042ScanCodes(DeviceExtension->BreakUsageList, //ChangedUsageList
+                                                DeviceExtension->UsageListLength, //最大可能
+                                                HidP_Keyboard_Break, //枚举，Key Action
+                                                &DeviceExtension->ModifierState,//输入输出
+                                                KbdHid_InsertScanCodes,//回调
+                                                DeviceExtension); //回调context
     ASSERT(Status == HIDP_STATUS_SUCCESS);
 
     /* translate new usage list */
     HidP_TranslateUsageAndPagesToI8042ScanCodes(DeviceExtension->MakeUsageList,
                                                 DeviceExtension->UsageListLength,
-                                                HidP_Keyboard_Make,
+                                                HidP_Keyboard_Make,//枚举，Key Action
                                                 &DeviceExtension->ModifierState,
                                                 KbdHid_InsertScanCodes,
                                                 DeviceExtension);
     ASSERT(Status == HIDP_STATUS_SUCCESS);
 
     /* re-init read */
-    KbdHid_InitiateRead(DeviceExtension);
+    KbdHid_InitiateRead(DeviceExtension); //重启读很重要，形成自循环
 
     /* stop completion */
     return STATUS_MORE_PROCESSING_REQUIRED;
@@ -189,7 +197,7 @@ NTSTATUS
 KbdHid_InitiateRead(
     IN PKBDHID_DEVICE_EXTENSION DeviceExtension)
 {
-    PIO_STACK_LOCATION IoStack;
+    PIO_STACK_LOCATION nextIoStack;
     NTSTATUS Status;
 
     /* re-use irp */
@@ -199,14 +207,14 @@ KbdHid_InitiateRead(
     DeviceExtension->Irp->MdlAddress = DeviceExtension->ReportMDL;
 
     /* get next stack location */
-    IoStack = IoGetNextIrpStackLocation(DeviceExtension->Irp);
+    nextIoStack = IoGetNextIrpStackLocation(DeviceExtension->Irp);
 
     /* init stack location */
-    IoStack->Parameters.Read.Length = DeviceExtension->ReportLength;
-    IoStack->Parameters.Read.Key = 0;
-    IoStack->Parameters.Read.ByteOffset.QuadPart = 0LL;
-    IoStack->MajorFunction = IRP_MJ_READ;
-    IoStack->FileObject = DeviceExtension->FileObject;
+    nextIoStack->Parameters.Read.Length = DeviceExtension->ReportLength;
+    nextIoStack->Parameters.Read.Key = 0;
+    nextIoStack->Parameters.Read.ByteOffset.QuadPart = 0LL;
+    nextIoStack->MajorFunction = IRP_MJ_READ; //本驱动没有专门的DispatchRead，但是下层驱动有！
+    nextIoStack->FileObject = DeviceExtension->FileObject;
 
     /* set completion routine */
     IoSetCompletionRoutine(DeviceExtension->Irp, KbdHid_ReadCompletion, DeviceExtension, TRUE, TRUE, TRUE);
@@ -278,7 +286,7 @@ KbdHid_Create(
         return Status;
     }
 
-    /* is the driver already in use */
+    //第一次执行，会有第二次打开的机会么？
     if (DeviceExtension->FileObject == NULL)
     {
          /* did the caller specify correct attributes */
@@ -292,6 +300,8 @@ KbdHid_Create(
              KeResetEvent(&DeviceExtension->ReadCompletionEvent);
 
              /* initiating read */
+			 //向下层发起读IRP很重要，难怪本驱动没有实现IRP_MJ_READ，
+			 //当然还有KeyboardClassServiceCallback的关系
              Status = KbdHid_InitiateRead(DeviceExtension);
              DPRINT("[KBDHID] KbdHid_InitiateRead: status %x\n", Status);
              if (Status == STATUS_PENDING)
@@ -322,6 +332,8 @@ KbdHid_Close(
 
     DPRINT("[KBDHID] IRP_MJ_CLOSE ReadReportActive %x\n", DeviceExtension->ReadReportActive);
 
+	//现在有两个IRP，一个是正常读键的IRP，另一个就是本IRP
+	//保证正常读键的IRP要么被很好地cancel，要么很好地完成，并且不会有新的读IRP进入
     if (DeviceExtension->ReadReportActive)
     {
         /* request stopping of the report cycle */
@@ -337,15 +349,16 @@ KbdHid_Close(
     DPRINT("[KBDHID] IRP_MJ_CLOSE ReadReportActive %x\n", DeviceExtension->ReadReportActive);
 
     /* remove file object */
-    DeviceExtension->FileObject = NULL;
+    DeviceExtension->FileObject = NULL;//有什么奥妙？
 
     /* skip location */
-    IoSkipCurrentIrpStackLocation(Irp);
+    IoSkipCurrentIrpStackLocation(Irp);//本层实在没有可执行的了，后续也不想要什么结果
 
     /* pass irp to down the stack */
-    return IoCallDriver(DeviceExtension->NextDeviceObject, Irp);
+    return IoCallDriver(DeviceExtension->NextDeviceObject, Irp);//必须传递到下层，让下层收到文件关闭请求
 }
 
+//内部控制包，很简单，不是来回拷贝就是简单设置，不会往下传递
 NTSTATUS
 NTAPI
 KbdHid_InternalDeviceControl(
@@ -367,7 +380,7 @@ KbdHid_InternalDeviceControl(
 
     switch (IoStack->Parameters.DeviceIoControl.IoControlCode)
     {
-        case IOCTL_KEYBOARD_QUERY_ATTRIBUTES:
+        case IOCTL_KEYBOARD_QUERY_ATTRIBUTES: //现成的，拷贝就行
             /* verify output buffer length */
             if (IoStack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(MOUSE_ATTRIBUTES))
             {
@@ -392,7 +405,7 @@ KbdHid_InternalDeviceControl(
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_SUCCESS;
 
-        case IOCTL_INTERNAL_KEYBOARD_CONNECT:
+        case IOCTL_INTERNAL_KEYBOARD_CONNECT: //连接一下就行
             /* verify input buffer length */
             if (IoStack->Parameters.DeviceIoControl.InputBufferLength < sizeof(CONNECT_DATA))
             {
@@ -415,33 +428,33 @@ KbdHid_InternalDeviceControl(
             Data = IoStack->Parameters.DeviceIoControl.Type3InputBuffer;
 
             /* store connect details */
-            DeviceExtension->ClassDeviceObject = Data->ClassDeviceObject;
-            DeviceExtension->ClassService = Data->ClassService;
+            DeviceExtension->ClassDeviceObject = Data->ClassDeviceObject;//保存上层类设备对象
+            DeviceExtension->ClassService = Data->ClassService;//保存回调函数，众所周知的KeyboardClassServiceCallback
 
             /* completed successfully */
             Irp->IoStatus.Status = STATUS_SUCCESS;
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_SUCCESS;
 
-        case IOCTL_INTERNAL_KEYBOARD_DISCONNECT:
+        case IOCTL_INTERNAL_KEYBOARD_DISCONNECT: //未实现
             /* not implemented */
             Irp->IoStatus.Status = STATUS_NOT_IMPLEMENTED;
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_NOT_IMPLEMENTED;
 
-        case IOCTL_INTERNAL_KEYBOARD_ENABLE:
+        case IOCTL_INTERNAL_KEYBOARD_ENABLE: //未实现，似乎好实现
             /* not supported */
             Irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_NOT_SUPPORTED;
 
-        case IOCTL_INTERNAL_KEYBOARD_DISABLE:
+        case IOCTL_INTERNAL_KEYBOARD_DISABLE://未实现，似乎好实现
             /* not supported */
             Irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_NOT_SUPPORTED;
 
-        case IOCTL_KEYBOARD_QUERY_INDICATORS:
+        case IOCTL_KEYBOARD_QUERY_INDICATORS: //现成的，拷贝就行
             if (IoStack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(KEYBOARD_INDICATOR_PARAMETERS))
             {
                 /* invalid parameter */
@@ -461,7 +474,7 @@ KbdHid_InternalDeviceControl(
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_NOT_IMPLEMENTED;
 
-        case IOCTL_KEYBOARD_QUERY_TYPEMATIC:
+        case IOCTL_KEYBOARD_QUERY_TYPEMATIC://现成的，拷贝就行
             if (IoStack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(KEYBOARD_TYPEMATIC_PARAMETERS))
             {
                 /* invalid parameter */
@@ -481,7 +494,7 @@ KbdHid_InternalDeviceControl(
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_SUCCESS;
 
-        case IOCTL_KEYBOARD_SET_INDICATORS:
+        case IOCTL_KEYBOARD_SET_INDICATORS://保存就行，但没实施
             if (IoStack->Parameters.DeviceIoControl.InputBufferLength < sizeof(KEYBOARD_INDICATOR_PARAMETERS))
             {
                 /* invalid parameter */
@@ -501,7 +514,7 @@ KbdHid_InternalDeviceControl(
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_SUCCESS;
 
-        case IOCTL_KEYBOARD_SET_TYPEMATIC:
+        case IOCTL_KEYBOARD_SET_TYPEMATIC: //保存就行，但没实施
             if (IoStack->Parameters.DeviceIoControl.InputBufferLength < sizeof(KEYBOARD_TYPEMATIC_PARAMETERS))
             {
                 /* invalid parameter */
@@ -521,7 +534,7 @@ KbdHid_InternalDeviceControl(
             IoCompleteRequest(Irp, IO_NO_INCREMENT);
             return STATUS_SUCCESS;
 
-        case IOCTL_KEYBOARD_QUERY_INDICATOR_TRANSLATION:
+        case IOCTL_KEYBOARD_QUERY_INDICATOR_TRANSLATION://未实现
             /* not implemented */
             DPRINT1("IOCTL_KEYBOARD_QUERY_INDICATOR_TRANSLATION not implemented\n");
             Irp->IoStatus.Status = STATUS_NOT_IMPLEMENTED;
@@ -534,7 +547,7 @@ KbdHid_InternalDeviceControl(
     /* unknown request not supported */
     Irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
-    return STATUS_NOT_SUPPORTED;
+    return STATUS_NOT_SUPPORTED; //没有不完成的情况
 }
 
 NTSTATUS
@@ -582,6 +595,7 @@ KbdHid_SystemControl(
     return IoCallDriver(DeviceExtension->NextDeviceObject, Irp);
 }
 
+//发送IoControl包，同步执行
 NTSTATUS
 KbdHid_SubmitRequest(
     PDEVICE_OBJECT DeviceObject,
@@ -632,6 +646,8 @@ KbdHid_SubmitRequest(
     return Status;
 }
 
+//子函数
+//进行了很多准备工作，获得PreparsedData之类提前需要得到的东西
 NTSTATUS
 NTAPI
 KbdHid_StartDevice(
@@ -761,6 +777,7 @@ KbdHid_StartDevice(
     return STATUS_SUCCESS;
 }
 
+//完成函数保证了回到原来的地方继续执行
 NTSTATUS
 NTAPI
 KbdHid_StartDeviceCompletion(
@@ -813,7 +830,8 @@ KbdHid_FreeResources(
 
     return STATUS_SUCCESS;
 }
-
+//为什么要往下传？因为读的东西来自下层，本层就是并不真正读，而是把读给了下层
+//我们接收的命令是IRP_MJ_FLUSH_BUFFERS，对于下层就是IOCTL_HID_FLUSH_QUEUE，所以下层要实现这个控制
 NTSTATUS
 NTAPI
 KbdHid_Flush(
@@ -878,7 +896,7 @@ KbdHid_Pnp(
         /* dispatch to lower device */
         return IoCallDriver(DeviceExtension->NextDeviceObject, Irp);
 
-    case IRP_MN_REMOVE_DEVICE:
+    case IRP_MN_REMOVE_DEVICE://上层要是阻止remove的化，一定不要传进来，因为本层无条件remove
         /* FIXME synchronization */
 
         /* cancel irp */
@@ -948,11 +966,15 @@ KbdHid_Pnp(
     }
 }
 
+
+//设置了键盘的缺省属性(Attributes)
+//分配了一个IRP挂在设备扩展上备用
+//给键盘上电！
 NTSTATUS
 NTAPI
 KbdHid_AddDevice(
     IN PDRIVER_OBJECT DriverObject,
-    IN PDEVICE_OBJECT PhysicalDeviceObject)
+    IN PDEVICE_OBJECT PhysicalDeviceObject) //只是告知PDO
 {
     NTSTATUS Status;
     PDEVICE_OBJECT DeviceObject, NextDeviceObject;
@@ -963,10 +985,10 @@ KbdHid_AddDevice(
     Status = IoCreateDevice(DriverObject,
                             sizeof(KBDHID_DEVICE_EXTENSION),
                             NULL,
-                            FILE_DEVICE_KEYBOARD,
+                            FILE_DEVICE_KEYBOARD, //这里是File了
                             0,
                             FALSE,
-                            &DeviceObject);
+                            &DeviceObject); //这应该是FDO
     if (!NT_SUCCESS(Status))
     {
         /* failed to create device object */
@@ -974,6 +996,7 @@ KbdHid_AddDevice(
     }
 
     /* now attach it */
+	//注意下面返回值NextDeviceObject不一定等于PhysicalDeviceObject，如果中间有层的话
     NextDeviceObject = IoAttachDeviceToDeviceStack(DeviceObject, PhysicalDeviceObject);
     if (!NextDeviceObject)
     {
@@ -992,7 +1015,7 @@ KbdHid_AddDevice(
     DeviceExtension->NextDeviceObject = NextDeviceObject;
     KeInitializeEvent(&DeviceExtension->ReadCompletionEvent, NotificationEvent, FALSE);
 
-    /* init keyboard attributes */
+    /* init keyboard attributes */ //注意这里设置了很多缺省的重要属性
     DeviceExtension->Attributes.KeyboardIdentifier.Type = KEYBOARD_TYPE_UNKNOWN;
     DeviceExtension->Attributes.KeyboardIdentifier.Subtype = MICROSOFT_KBD_101_TYPE;
     DeviceExtension->Attributes.NumberOfFunctionKeys = MICROSOFT_KBD_FUNC;
@@ -1005,12 +1028,12 @@ KbdHid_AddDevice(
     DeviceExtension->Attributes.KeyRepeatMaximum.Delay = KEYBOARD_TYPEMATIC_DELAY_MAXIMUM;
 
     /* allocate irp */
-    DeviceExtension->Irp = IoAllocateIrp(NextDeviceObject->StackSize, FALSE);
+    DeviceExtension->Irp = IoAllocateIrp(NextDeviceObject->StackSize, FALSE);//分配的Irp会循环使用吗？
 
     /* FIXME handle allocation error */
     ASSERT(DeviceExtension->Irp);
 
-    /* set power state to D0 */
+    /* set power state to D0 */ //加电！
     State.DeviceState =  PowerDeviceD0;
     PoSetPowerState(DeviceObject, DevicePowerState, State);
 
@@ -1030,7 +1053,8 @@ KbdHid_Unload(
     UNIMPLEMENTED
 }
 
-
+//注意没有DispatchRead，运行级别是IRQL = PASSIVE_LEVEL
+//注意没有Cancel routine，运行级别是IRQL = DISPATCH_LEVEL 
 NTSTATUS
 NTAPI
 DriverEntry(
@@ -1038,18 +1062,16 @@ DriverEntry(
     IN PUNICODE_STRING RegPath)
 {
     /* initialize driver object */
-    DriverObject->DriverUnload = KbdHid_Unload;
-    DriverObject->DriverExtension->AddDevice = KbdHid_AddDevice;
-    DriverObject->MajorFunction[IRP_MJ_CREATE] = KbdHid_Create;
-    DriverObject->MajorFunction[IRP_MJ_CLOSE] = KbdHid_Close;
-    DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS] = KbdHid_Flush;
-    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = KbdHid_DeviceControl;
-    DriverObject->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = KbdHid_InternalDeviceControl;
-    DriverObject->MajorFunction[IRP_MJ_POWER] = KbdHid_Power;
-    DriverObject->MajorFunction[IRP_MJ_PNP] = KbdHid_Pnp;
-    DriverObject->MajorFunction[IRP_MJ_SYSTEM_CONTROL] = KbdHid_SystemControl;
-    DriverObject->DriverUnload = KbdHid_Unload;
-    DriverObject->DriverExtension->AddDevice = KbdHid_AddDevice;
+    DriverObject->MajorFunction[IRP_MJ_CREATE] = KbdHid_Create; //PASSIVE_LEVEL 
+    DriverObject->MajorFunction[IRP_MJ_CLOSE] = KbdHid_Close; //PASSIVE_LEVEL
+    DriverObject->MajorFunction[IRP_MJ_FLUSH_BUFFERS] = KbdHid_Flush;//PASSIVE_LEVEL
+    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = KbdHid_DeviceControl;//PASSIVE_LEVEL
+    DriverObject->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL] = KbdHid_InternalDeviceControl;//PASSIVE_LEVEL
+    DriverObject->MajorFunction[IRP_MJ_POWER] = KbdHid_Power;//PASSIVE_LEVEL
+    DriverObject->MajorFunction[IRP_MJ_PNP] = KbdHid_Pnp;//PASSIVE_LEVEL
+    DriverObject->MajorFunction[IRP_MJ_SYSTEM_CONTROL] = KbdHid_SystemControl;//PASSIVE_LEVEL
+    DriverObject->DriverUnload = KbdHid_Unload;//PASSIVE_LEVEL
+    DriverObject->DriverExtension->AddDevice = KbdHid_AddDevice;//PASSIVE_LEVEL
 
     /* done */
     return STATUS_SUCCESS;
