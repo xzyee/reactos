@@ -38,17 +38,17 @@ typedef struct
     //
     // class callback
     //
-    PVOID ClassService;
+    PVOID ClassService;//众所周知的KeyboardClassServiceCallback
 
     //
     // buffer for the four usage lists below
     //
-    PVOID UsageListBuffer;
+    PVOID UsageListBuffer; //处理键盘信息需要4个list
 
     //
     // usage list length
     //
-    USHORT UsageListLength;
+    USHORT UsageListLength; //每个list的长度（element数）
 
     //
     // current usage list length
@@ -139,6 +139,7 @@ typedef struct
 #define MICROSOFT_KBD_FUNC              12
 #define KEYBOARD_TYPE_UNKNOWN   (0x51)
 #define MICROSOFT_KBD_101_TYPE           0
+
 
 
 NTSTATUS
