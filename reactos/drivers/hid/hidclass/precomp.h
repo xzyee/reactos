@@ -1,3 +1,4 @@
+
 #ifndef _HIDCLASS_PCH_
 #define _HIDCLASS_PCH_
 
@@ -8,8 +9,21 @@
 #include <hidport.h>
 
 #define HIDCLASS_TAG 'CdiH'
+/*
+关于NextDeviceObject：
+(1)minidriver FDO对应的设备对象之下层设备对象
+(2)把本层minidriver不处理的irp传递到下层去处理
+(3)本层minidriver实际上由HIDClass代替了，只是少许函数
+typedef struct _HID_DEVICE_EXTENSION { 
+	PDEVICE_OBJECT PhysicalDeviceObject; 
+	PDEVICE_OBJECT NextDeviceObject; 
+	PVOID MiniDeviceExtension; 
+} HID_DEVICE_EXTENSION, *PHID_DEVICE_EXTENSION;
+The HID_DEVICE_EXTENSION structure is used by a HID minidriver as its layout
+for the device extension of a HIDClass device's functional device object.
 
-typedef struct
+*/
+typedef struct //这是所有HID设备都遵循的驱动扩展，注册的是minidriver的东西，本驱动(HIDClass)直接使用
 {
     PDRIVER_OBJECT DriverObject;
     ULONG DeviceExtensionSize;
@@ -18,36 +32,17 @@ typedef struct
     PDRIVER_ADD_DEVICE AddDevice;
     PDRIVER_UNLOAD DriverUnload;
     KSPIN_LOCK Lock;
-
 } HIDCLASS_DRIVER_EXTENSION, *PHIDCLASS_DRIVER_EXTENSION;
 
 typedef struct
 {
-    //
-    // hid device extension
-    //
-    HID_DEVICE_EXTENSION HidDeviceExtension;
-
-    //
-    // if it is a pdo
-    //
-    BOOLEAN IsFDO;
-
-    //
-    // driver extension
-    //
-    PHIDCLASS_DRIVER_EXTENSION DriverExtension;
-
-    //
-    // device description
-    //
-    HIDP_DEVICE_DESC DeviceDescription;
-
-    //
-    // hid attributes
-    //
-    HID_DEVICE_ATTRIBUTES Attributes;
-
+	BOOLEAN IsFDO;
+	PHIDCLASS_DRIVER_EXTENSION DriverExtension;//通过IoGetDriverObjectExtension得到，是minidriver的驱动扩展
+    HID_DEVICE_EXTENSION HidDeviceExtension;//在AddDevice中创建设备对象以后被设置
+	
+	//以下二行在fdo的StartDevcie中通过irp包查询到
+    HIDP_DEVICE_DESC DeviceDescription;// device description，
+    HID_DEVICE_ATTRIBUTES Attributes;// hid attributes
 } HIDCLASS_COMMON_DEVICE_EXTENSION, *PHIDCLASS_COMMON_DEVICE_EXTENSION;
 
 typedef struct
@@ -57,59 +52,26 @@ typedef struct
     //
     HIDCLASS_COMMON_DEVICE_EXTENSION Common;
 
-    //
-    // device capabilities
-    //
+	//以下三行在fdo的StartDevcie中通过irp包查询到
     DEVICE_CAPABILITIES Capabilities;
-
-    //
-    // hid descriptor
-    //
     HID_DESCRIPTOR HidDescriptor;
-
-    //
-    // report descriptor
-    //
-    PUCHAR ReportDescriptor;
+    PUCHAR ReportDescriptor; //FDO才会有，用于获取Collection
 
     //
     // device relations
     //
-    PDEVICE_RELATIONS DeviceRelations;
+    PDEVICE_RELATIONS DeviceRelations;//FDO才会有，用于创建pdo
 
 } HIDCLASS_FDO_EXTENSION, *PHIDCLASS_FDO_EXTENSION;
 
 typedef struct
 {
-    //
-    // parts shared by fdo and pdo
-    //
     HIDCLASS_COMMON_DEVICE_EXTENSION Common;
-
-    //
-    // device capabilities
-    //
     DEVICE_CAPABILITIES Capabilities;
-
-    //
-    // collection index
-    //
-    ULONG CollectionNumber;
-
-    //
-    // device interface
-    //
-    UNICODE_STRING DeviceInterface;
-
-    //
-    // FDO device object
-    //
-    PDEVICE_OBJECT FDODeviceObject;
-
-    //
-    // fdo device extension
-    //
-    PHIDCLASS_FDO_EXTENSION FDODeviceExtension;
+    ULONG CollectionNumber; //相当于pdo序号
+    UNICODE_STRING DeviceInterface; //pdo独有
+    PDEVICE_OBJECT FDODeviceObject; //pdo在HidClass_Read时要找到fdo，调用fdo的IRP_MJ_INTERNAL_DEVICE_CONTROL处理函数
+    PHIDCLASS_FDO_EXTENSION FDODeviceExtension; //pdo处理IRP_MN_REMOVE_DEVICE要用，主要是DeviceRelations这个pdo表
 
 } HIDCLASS_PDO_DEVICE_EXTENSION, *PHIDCLASS_PDO_DEVICE_EXTENSION;
 
@@ -118,61 +80,37 @@ typedef struct __HIDCLASS_FILEOP_CONTEXT__
     //
     // device extension
     //
-    PHIDCLASS_PDO_DEVICE_EXTENSION DeviceExtension;
+    PHIDCLASS_PDO_DEVICE_EXTENSION DeviceExtension;//注意是PDO的
 
-    //
-    // spin lock
-    //
-    KSPIN_LOCK Lock;
 
-    //
-    // read irp pending list
-    //
+    KSPIN_LOCK Lock; //保护下面的链表
     LIST_ENTRY ReadPendingIrpListHead;
+    LIST_ENTRY IrpCompletedListHead; //为了可以重用irp
 
-    //
-    // completed irp list
-    //
-    LIST_ENTRY IrpCompletedListHead;
-
-    //
-    // stop in progress indicator
-    //
-    BOOLEAN StopInProgress;
-
-    //
-    // read complete event
-    //
-    KEVENT IrpReadComplete;
+    BOOLEAN StopInProgress; //为了发信号要关闭文件
+    KEVENT IrpReadComplete; //关闭文件时要等待最后一个irp完成
 
 } HIDCLASS_FILEOP_CONTEXT, *PHIDCLASS_FILEOP_CONTEXT;
 
+//每IRP
+//以完成函数参数方式达到"每irp"的目的
 typedef struct
 {
-    //
-    // original request
-    //
-    PIRP OriginalIrp;
 
-    //
-    // file op
-    //
-    PHIDCLASS_FILEOP_CONTEXT FileOp;
+    PIRP OriginalIrp;//原始irp先放一放
+
+    PHIDCLASS_FILEOP_CONTEXT FileOp;//取Collection信息和report信息，还有完成后的同步问题，毕竟有链表，还有卸载时
 
     //
     // buffer for reading report
     //
-    PVOID InputReportBuffer;
-
-    //
-    // buffer length
-    //
+    PVOID InputReportBuffer; //每次读的时候都把report读到这里，二传手
     ULONG InputReportBufferLength;
 
     //
     // work item
     //
-    PIO_WORKITEM CompletionWorkItem;
+    PIO_WORKITEM CompletionWorkItem; //未用
 
 } HIDCLASS_IRP_CONTEXT, *PHIDCLASS_IRP_CONTEXT;
 
