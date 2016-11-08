@@ -31,11 +31,12 @@ DllUnload(VOID)
     return STATUS_SUCCESS;
 }
 
+//create and attach！
 NTSTATUS
 NTAPI
-HidClassAddDevice(
+HidClassAddDevice( //这是主业，将在minidriver注册时当成特洛伊
     IN PDRIVER_OBJECT DriverObject,
-    IN PDEVICE_OBJECT PhysicalDeviceObject)
+    IN PDEVICE_OBJECT PhysicalDeviceObject) //不见得一定是物理对象，只要在设备堆栈中的就行
 {
     WCHAR CharDeviceName[64];
     NTSTATUS Status;
@@ -52,10 +53,10 @@ HidClassAddDevice(
     swprintf(CharDeviceName, L"\\Device\\_HID%08x", HidClassDeviceNumber);
 
     /* initialize device name */
-    RtlInitUnicodeString(&DeviceName, CharDeviceName);
+    RtlInitUnicodeString(&DeviceName, CharDeviceName); //等会创建设备时用
 
     /* get driver object extension */
-    DriverExtension = IoGetDriverObjectExtension(DriverObject, ClientIdentificationAddress);
+    DriverExtension = IoGetDriverObjectExtension(DriverObject, ClientIdentificationAddress);//将被保存在设备扩展的common字段中，要不找不到mini的派遣函数
     if (!DriverExtension)
     {
         /* device removed */
@@ -64,7 +65,7 @@ HidClassAddDevice(
     }
 
     /* calculate device extension size */
-    DeviceExtensionSize = sizeof(HIDCLASS_FDO_EXTENSION) + DriverExtension->DeviceExtensionSize;
+    DeviceExtensionSize = sizeof(HIDCLASS_FDO_EXTENSION) + DriverExtension->DeviceExtensionSize;//二合一
 
     /* now create the device */
     Status = IoCreateDevice(DriverObject, DeviceExtensionSize, &DeviceName, FILE_DEVICE_UNKNOWN, 0, FALSE, &NewDeviceObject);
@@ -76,18 +77,24 @@ HidClassAddDevice(
     }
 
     /* get device extension */
-    FDODeviceExtension = NewDeviceObject->DeviceExtension;
+    FDODeviceExtension = NewDeviceObject->DeviceExtension;//fdo的设备扩展在前，mini的设备扩展在后
 
     /* zero device extension */
     RtlZeroMemory(FDODeviceExtension, sizeof(HIDCLASS_FDO_EXTENSION));
 
     /* initialize device extension */
-    FDODeviceExtension->Common.IsFDO = TRUE;
+    FDODeviceExtension->Common.IsFDO = TRUE; //AddDevice得来的一定是fdo?可能吧
     FDODeviceExtension->Common.DriverExtension = DriverExtension;
+	
+	//下面设置著名的HID_DEVICE_EXTENTION结构，这个结构给minidriver的直通派遣函数用，本HIDClass也用
+	//都是把IRP包转发给minidriver的下层，说转发给minidriver的下层也就是转发给HIDClass的下层
+	//某种意义上说：HIDClass和minidriver是一个意思，只是HIDClass只为该minidriver服务而已
+	//HID_DEVICE_EXTENTION代表了HIDClass和minidriver的联系，这种联系是上下层的关系，很紧密，并且带有minidriver的设备扩展
     FDODeviceExtension->Common.HidDeviceExtension.PhysicalDeviceObject = PhysicalDeviceObject;
     FDODeviceExtension->Common.HidDeviceExtension.MiniDeviceExtension = (PVOID)((ULONG_PTR)FDODeviceExtension + sizeof(HIDCLASS_FDO_EXTENSION));
     FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject = IoAttachDeviceToDeviceStack(NewDeviceObject, PhysicalDeviceObject);
-    if (FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject == NULL)
+    
+	if (FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject == NULL)
     {
         /* no PDO */
         IoDeleteDevice(NewDeviceObject);
@@ -99,7 +106,7 @@ HidClassAddDevice(
     ASSERT(FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject);
 
     /* increment stack size */
-    NewDeviceObject->StackSize++;
+    NewDeviceObject->StackSize++;//为什么？因为执行了IoAttachDeviceToDeviceStack
 
     /* init device object */
     NewDeviceObject->Flags |= DO_BUFFERED_IO | DO_POWER_PAGABLE;
@@ -107,7 +114,7 @@ HidClassAddDevice(
 
     /* now call driver provided add device routine */
     ASSERT(DriverExtension->AddDevice != 0);
-    Status = DriverExtension->AddDevice(DriverObject, NewDeviceObject);
+    Status = DriverExtension->AddDevice(DriverObject, NewDeviceObject);//minidriver有什么要做的
     if (!NT_SUCCESS(Status))
     {
         /* failed */
@@ -129,10 +136,11 @@ HidClassDriverUnload(
     UNIMPLEMENTED
 }
 
+//主要创建每fileobject的context，保存在FileObject->FsContext
 NTSTATUS
 NTAPI
 HidClass_Create(
-    IN PDEVICE_OBJECT DeviceObject,
+    IN PDEVICE_OBJECT DeviceObject, //pdo
     IN PIRP Irp)
 {
     PIO_STACK_LOCATION IoStack;
@@ -185,7 +193,7 @@ HidClass_Create(
     DPRINT("DesiredAccess %x\n", IoStack->Parameters.Create.SecurityContext->DesiredAccess);
 
     //
-    // allocate context
+    // allocate HIDCLASS_FILEOP_CONTEXT，无论是键盘还是鼠标，这个结构都是一样大小
     //
     Context = ExAllocatePoolWithTag(NonPagedPool, sizeof(HIDCLASS_FILEOP_CONTEXT), HIDCLASS_TAG);
     if (!Context)
@@ -202,7 +210,7 @@ HidClass_Create(
     // init context
     //
     RtlZeroMemory(Context, sizeof(HIDCLASS_FILEOP_CONTEXT));
-    Context->DeviceExtension = PDODeviceExtension;
+    Context->DeviceExtension = PDODeviceExtension; //找collection信息有用
     KeInitializeSpinLock(&Context->Lock);
     InitializeListHead(&Context->ReadPendingIrpListHead);
     InitializeListHead(&Context->IrpCompletedListHead);
@@ -212,7 +220,7 @@ HidClass_Create(
     // store context
     //
     ASSERT(IoStack->FileObject);
-    IoStack->FileObject->FsContext = Context;
+    IoStack->FileObject->FsContext = Context; //每fileobject
 
     //
     // done
@@ -222,6 +230,7 @@ HidClass_Create(
     return STATUS_SUCCESS;
 }
 
+//通过irp得到FsContext以后就大开杀戒
 NTSTATUS
 NTAPI
 HidClass_Close(
@@ -266,7 +275,7 @@ HidClass_Close(
     ASSERT(IoStack->FileObject->FsContext);
 
     //
-    // get irp context
+    // get irp context，下面看到每fileobject的context有什么用！
     //
     IrpContext = IoStack->FileObject->FsContext;
     ASSERT(IrpContext);
@@ -357,11 +366,12 @@ HidClass_Close(
     return STATUS_SUCCESS;
 }
 
+//完成函数返回STATUS_MORE_PROCESSING_REQUIRED的例子
 NTSTATUS
 NTAPI
 HidClass_ReadCompleteIrp(
     IN PDEVICE_OBJECT DeviceObject,
-    IN PIRP Irp,
+    IN PIRP newIrp,
     IN PVOID Ctx)
 {
     PHIDCLASS_IRP_CONTEXT IrpContext;
@@ -378,9 +388,9 @@ HidClass_ReadCompleteIrp(
     IrpContext = Ctx;
 
     DPRINT("HidClass_ReadCompleteIrp Irql %lu\n", KeGetCurrentIrql());
-    DPRINT("HidClass_ReadCompleteIrp Status %lx\n", Irp->IoStatus.Status);
-    DPRINT("HidClass_ReadCompleteIrp Length %lu\n", Irp->IoStatus.Information);
-    DPRINT("HidClass_ReadCompleteIrp Irp %p\n", Irp);
+    DPRINT("HidClass_ReadCompleteIrp Status %lx\n", newIrp->IoStatus.Status);
+    DPRINT("HidClass_ReadCompleteIrp Length %lu\n", newIrp->IoStatus.Information);
+    DPRINT("HidClass_ReadCompleteIrp newIrp %p\n", newIrp);
     DPRINT("HidClass_ReadCompleteIrp InputReportBuffer %p\n", IrpContext->InputReportBuffer);
     DPRINT("HidClass_ReadCompleteIrp InputReportBufferLength %li\n", IrpContext->InputReportBufferLength);
     DPRINT("HidClass_ReadCompleteIrp OriginalIrp %p\n", IrpContext->OriginalIrp);
@@ -388,7 +398,7 @@ HidClass_ReadCompleteIrp(
     //
     // copy result
     //
-    if (Irp->IoStatus.Information)
+    if (newIrp->IoStatus.Information)
     {
         //
         // get address
@@ -425,17 +435,17 @@ HidClass_ReadCompleteIrp(
             }
 
             //
-            // copy result
+            // copy result to OriginalIrp's buffer
             //
             RtlCopyMemory(&Address[Offset], IrpContext->InputReportBuffer, IrpContext->InputReportBufferLength);
         }
     }
 
     //
-    // copy result status
+    // copy result status OriginalIrp's IoStatus
     //
-    IrpContext->OriginalIrp->IoStatus.Status = Irp->IoStatus.Status;
-    IrpContext->OriginalIrp->IoStatus.Information = Irp->IoStatus.Information;
+    IrpContext->OriginalIrp->IoStatus.Status = newIrp->IoStatus.Status;
+    IrpContext->OriginalIrp->IoStatus.Information = newIrp->IoStatus.Information;
 
     //
     // free input report buffer
@@ -450,7 +460,7 @@ HidClass_ReadCompleteIrp(
     //
     // remove from pending list
     //
-    RemoveEntryList(&Irp->Tail.Overlay.ListEntry);
+    RemoveEntryList(&newIrp->Tail.Overlay.ListEntry);
 
     //
     // is list empty
@@ -460,7 +470,7 @@ HidClass_ReadCompleteIrp(
     //
     // insert into completed list
     //
-    InsertTailList(&IrpContext->FileOp->IrpCompletedListHead, &Irp->Tail.Overlay.ListEntry);
+    InsertTailList(&IrpContext->FileOp->IrpCompletedListHead, &newIrp->Tail.Overlay.ListEntry);
 
     //
     // release lock
@@ -483,14 +493,6 @@ HidClass_ReadCompleteIrp(
         KeSetEvent(&IrpContext->FileOp->IrpReadComplete, 0, FALSE);
     }
 
-    if (IrpContext->FileOp->StopInProgress && IsEmpty)
-    {
-        //
-        // last pending irp
-        //
-        DPRINT1("[HIDCLASS] LastPendingTransfer Signalling\n");
-        KeSetEvent(&IrpContext->FileOp->IrpReadComplete, 0, FALSE);
-    }
 
     //
     // free irp context
@@ -500,7 +502,7 @@ HidClass_ReadCompleteIrp(
     //
     // done
     //
-    return STATUS_MORE_PROCESSING_REQUIRED;
+    return STATUS_MORE_PROCESSING_REQUIRED; //难道为了irp重用？是，挂在Ctx->FileOp->IrpCompletedListHead
 }
 
 PIRP
@@ -543,15 +545,17 @@ HidClass_GetIrp(
     return Irp;
 }
 
+//创建控制包，目前只有HidClass_Read会用到
+// 深刻理解irpcontext：（1）作为完成函数的参数，如此伴随irp；（2）相当于不适用iostack的替代
 NTSTATUS
 HidClass_BuildIrp(
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP RequestIrp,
-    IN PHIDCLASS_FILEOP_CONTEXT Context,
+    IN PHIDCLASS_FILEOP_CONTEXT Context, //每文件的context,指针将被保存在OutIrpContext中
     IN ULONG DeviceIoControlCode,
     IN ULONG BufferLength,
     OUT PIRP *OutIrp,
-    OUT PHIDCLASS_IRP_CONTEXT *OutIrpContext)
+    OUT PHIDCLASS_IRP_CONTEXT *OutIrpContext) //重用irp的相关信息（OriginalIrp、InputReportBuffer等），在完成时用
 {
     PIRP Irp;
     PIO_STACK_LOCATION IoStack;
@@ -588,7 +592,7 @@ HidClass_BuildIrp(
 
     //
     // allocate completion context
-    //
+    // 第一次看到completion context的概念，好好理解
     IrpContext = ExAllocatePoolWithTag(NonPagedPool, sizeof(HIDCLASS_IRP_CONTEXT), HIDCLASS_TAG);
     if (!IrpContext)
     {
@@ -620,7 +624,7 @@ HidClass_BuildIrp(
     ASSERT(CollectionDescription);
 
     //
-    // get report description
+    // get report description，为了得到report报告的长度即ReportDescription->InputLength
     //
     ReportDescription = HidClassPDO_GetReportDescription(&IrpContext->FileOp->DeviceExtension->Common.DeviceDescription,
                                                          IrpContext->FileOp->DeviceExtension->CollectionNumber);
@@ -629,9 +633,9 @@ HidClass_BuildIrp(
     //
     // sanity check
     //
-    ASSERT(CollectionDescription->InputLength >= ReportDescription->InputLength);
+    ASSERT(CollectionDescription->InputLength >= ReportDescription->InputLength);//找ReportDescription->InputLength
 
-    if (Context->StopInProgress)
+    if (Context->StopInProgress) //这里是个不错的检查点
     {
          //
          // stop in progress
@@ -671,8 +675,8 @@ HidClass_BuildIrp(
     // init stack location
     //
     IoStack->MajorFunction = IRP_MJ_INTERNAL_DEVICE_CONTROL;
-    IoStack->Parameters.DeviceIoControl.IoControlCode = DeviceIoControlCode;
-    IoStack->Parameters.DeviceIoControl.OutputBufferLength = IrpContext->InputReportBufferLength;
+    IoStack->Parameters.DeviceIoControl.IoControlCode = DeviceIoControlCode; //输入参数
+    IoStack->Parameters.DeviceIoControl.OutputBufferLength = IrpContext->InputReportBufferLength;//上面刚刚取得
     IoStack->Parameters.DeviceIoControl.InputBufferLength = 0;
     IoStack->Parameters.DeviceIoControl.Type3InputBuffer = NULL;
     Irp->UserBuffer = IrpContext->InputReportBuffer;
@@ -718,19 +722,19 @@ HidClass_Read(
     //
     // sanity check
     //
-    ASSERT(IoStack->FileObject);
-    ASSERT(IoStack->FileObject->FsContext);
+    //ASSERT(IoStack->FileObject);
+    //ASSERT(IoStack->FileObject->FsContext);
 
     //
     // get context
     //
-    Context = IoStack->FileObject->FsContext;
-    ASSERT(Context);
+    Context = IoStack->FileObject->FsContext; //很好，注意理解，将随irp走
+    //ASSERT(Context);
 
     //
     // FIXME support polled devices
     //
-    ASSERT(Context->DeviceExtension->Common.DriverExtension->DevicesArePolled == FALSE);
+    //ASSERT(Context->DeviceExtension->Common.DriverExtension->DevicesArePolled == FALSE);
 
     if (Context->StopInProgress)
     {
@@ -748,8 +752,8 @@ HidClass_Read(
     //
     Status = HidClass_BuildIrp(DeviceObject,
                                Irp,
-                               Context,
-                               IOCTL_HID_READ_REPORT,
+                               Context,//将随irpcontext走
+                               IOCTL_HID_READ_REPORT, //注意构造IOCTL包，为什么是IOCTL包，不是IPR_MAJOR_READ?
                                IoStack->Parameters.Read.Length,
                                &NewIrp,
                                &NewIrpContext);
@@ -794,15 +798,17 @@ HidClass_Read(
     //
     IoMarkIrpPending(Irp);
 
-    //
+    //-----------------------------
     // let's dispatch the request
-    //
-    ASSERT(Context->DeviceExtension);
+    //-----------------------------
+	//看出来context的好处：我们现在在pdo里面，要找到fdo才能下传请求包
+	//问题:什么要通过这种形式下传？
+	//答案：
+    //ASSERT(Context->DeviceExtension);
     Status = Context->DeviceExtension->Common.DriverExtension->MajorFunction[IRP_MJ_INTERNAL_DEVICE_CONTROL](Context->DeviceExtension->FDODeviceObject, NewIrp);
 
-    //
-    // complete
-    //
+	//二传：这一传是把newirp发出去了，原来的irp自然就pending了，在二传中，即在newirp的完成函数中继续irp
+ 
     return STATUS_PENDING;
 }
 
@@ -819,6 +825,7 @@ HidClass_Write(
     return STATUS_NOT_IMPLEMENTED;
 }
 
+//主要为了上层可以得到CollectionDescription->PreparsedData
 NTSTATUS
 NTAPI
 HidClass_DeviceControl(
@@ -955,6 +962,7 @@ HidClass_DeviceControl(
     }
 }
 
+//不支持
 NTSTATUS
 NTAPI
 HidClass_InternalDeviceControl(
@@ -968,6 +976,8 @@ HidClass_InternalDeviceControl(
     return STATUS_NOT_IMPLEMENTED;
 }
 
+//对pdo，完成
+//对fdo，往下传
 NTSTATUS
 NTAPI
 HidClass_Power(
