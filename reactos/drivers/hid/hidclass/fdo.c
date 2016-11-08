@@ -13,12 +13,13 @@
 #define NDEBUG
 #include <debug.h>
 
+//目的是回去继续执行
 NTSTATUS
 NTAPI
 HidClassFDO_QueryCapabilitiesCompletionRoutine(
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP Irp,
-    IN PVOID Context)
+    IN PVOID Context)//呵呵，把event也发过来了
 {
     //
     // set event
@@ -31,6 +32,12 @@ HidClassFDO_QueryCapabilitiesCompletionRoutine(
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
+//子函数，被HidClassFDO_StartDevice调用
+//向下层发送pnp同步包：IRP_MN_QUERY_CAPABILITIES
+//问题：哪个层会发送IRP_MN_QUERY_CAPABILITIES请求设备的能力？
+//答案：HIDClass
+//问题：什么时候？
+//答案：在startdevice的时候
 NTSTATUS
 HidClassFDO_QueryCapabilities(
     IN PDEVICE_OBJECT DeviceObject,
@@ -75,7 +82,7 @@ HidClassFDO_QueryCapabilities(
     //
     IoStack->MajorFunction = IRP_MJ_PNP;
     IoStack->MinorFunction = IRP_MN_QUERY_CAPABILITIES;
-    IoStack->Parameters.DeviceCapabilities.Capabilities = Capabilities;
+    IoStack->Parameters.DeviceCapabilities.Capabilities = Capabilities; //输入参数
 
     //
     // set completion routine
@@ -96,9 +103,9 @@ HidClassFDO_QueryCapabilities(
     //
     Irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
 
-    //
-    // call lower  device
-    //
+    //------------------------
+    // call lower device 发送！
+    //------------------------
     Status = IoCallDriver(FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject, Irp);
     if (Status == STATUS_PENDING)
     {
@@ -124,6 +131,7 @@ HidClassFDO_QueryCapabilities(
     return Status;
 }
 
+//目的是回去继续执行
 NTSTATUS
 NTAPI
 HidClassFDO_DispatchRequestSynchronousCompletion(
@@ -142,7 +150,8 @@ HidClassFDO_DispatchRequestSynchronousCompletion(
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
-
+//同步调用minidriver
+//用这种形式发送同步包，等返回后irp可能携带这处理后的最新信息
 NTSTATUS
 HidClassFDO_DispatchRequestSynchronous(
     IN PDEVICE_OBJECT DeviceObject,
@@ -170,9 +179,9 @@ HidClassFDO_DispatchRequestSynchronous(
 
     ASSERT(Irp->CurrentLocation > 0);
     //
-    // create stack location
+    // create stack location:sets the IRP stack location in a driver-allocated IRP to that of the caller.
     //
-    IoSetNextIrpStackLocation(Irp);
+    IoSetNextIrpStackLocation(Irp);//这里，非常值得研究
 
     //
     // get next stack location
@@ -187,7 +196,7 @@ HidClassFDO_DispatchRequestSynchronous(
     //
     // sanity check
     //
-    ASSERT(CommonDeviceExtension->DriverExtension->MajorFunction[IoStack->MajorFunction] != NULL);
+    //ASSERT(CommonDeviceExtension->DriverExtension->MajorFunction[IoStack->MajorFunction] != NULL);
 
     //
     // call minidriver (hidusb)
@@ -210,9 +219,10 @@ HidClassFDO_DispatchRequestSynchronous(
     //
     // done
     //
-    return Status;
+    return Status; //等返回后，调用者要用到irp带回来的信息
 }
 
+//派遣到minidriver，这个是非同步的，会立即返回
 NTSTATUS
 HidClassFDO_DispatchRequest(
     IN PDEVICE_OBJECT DeviceObject,
@@ -247,11 +257,11 @@ HidClassFDO_DispatchRequest(
     //
     // sanity check
     //
-    ASSERT(CommonDeviceExtension->DriverExtension->MajorFunction[IoStack->MajorFunction] != NULL);
+    //ASSERT(CommonDeviceExtension->DriverExtension->MajorFunction[IoStack->MajorFunction] != NULL);
 
     //
-    // call driver
-    //
+    // call minidriver
+	//
     Status = CommonDeviceExtension->DriverExtension->MajorFunction[IoStack->MajorFunction](DeviceObject, Irp);
 
     //
@@ -260,6 +270,8 @@ HidClassFDO_DispatchRequest(
     return Status;
 }
 
+//被HidClassFDO_StartDevice调用
+//三箭齐发：直取三个最重要的描述符
 NTSTATUS
 HidClassFDO_GetDescriptors(
     IN PDEVICE_OBJECT DeviceObject)
@@ -287,6 +299,9 @@ HidClassFDO_GetDescriptors(
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
+	//----------------------------------------------
+	// 第一步：取HID_DESCRIPTOR
+	//----------------------------------------------
     //
     // get stack location
     //
@@ -295,12 +310,12 @@ HidClassFDO_GetDescriptors(
     //
     // init stack location
     //
-    IoStack->MajorFunction = IRP_MJ_INTERNAL_DEVICE_CONTROL;
-    IoStack->Parameters.DeviceIoControl.IoControlCode = IOCTL_HID_GET_DEVICE_DESCRIPTOR;
+    IoStack->MajorFunction = IRP_MJ_INTERNAL_DEVICE_CONTROL; //注意是内部控制io
+    IoStack->Parameters.DeviceIoControl.IoControlCode = IOCTL_HID_GET_DEVICE_DESCRIPTOR;//这里取第一个描述符，就是设备描述符
     IoStack->Parameters.DeviceIoControl.OutputBufferLength = sizeof(HID_DESCRIPTOR);
     IoStack->Parameters.DeviceIoControl.InputBufferLength = 0;
     IoStack->Parameters.DeviceIoControl.Type3InputBuffer = NULL;
-    Irp->UserBuffer = &FDODeviceExtension->HidDescriptor;
+    Irp->UserBuffer = &FDODeviceExtension->HidDescriptor;//存在这里
 
     //
     // send request
@@ -315,13 +330,17 @@ HidClassFDO_GetDescriptors(
         IoFreeIrp(Irp);
         return Status;
     }
+	
+	//----------------------------------------------
+	// 第二步：取HID_DEVICE_ATTRIBUTES
+	//----------------------------------------------
 
     //
     // let's get device attributes
     //
     IoStack->Parameters.DeviceIoControl.IoControlCode = IOCTL_HID_GET_DEVICE_ATTRIBUTES;
     IoStack->Parameters.DeviceIoControl.OutputBufferLength = sizeof(HID_DEVICE_ATTRIBUTES);
-    Irp->UserBuffer = &FDODeviceExtension->Common.Attributes;
+    Irp->UserBuffer = &FDODeviceExtension->Common.Attributes;//存在这里
 
     //
     // send request
@@ -360,12 +379,17 @@ HidClassFDO_GetDescriptors(
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
+	//----------------------------------------------
+	// 第三步：取ReportDescriptor，UCHAR字符串
+	// 如何拦截IOCTL_HID_GET_REPORT_DESCRIPTOR？
+	//----------------------------------------------
+
     //
     // init stack location
     //
     IoStack->Parameters.DeviceIoControl.IoControlCode = IOCTL_HID_GET_REPORT_DESCRIPTOR;
     IoStack->Parameters.DeviceIoControl.OutputBufferLength = FDODeviceExtension->HidDescriptor.DescriptorList[0].wReportLength;
-    Irp->UserBuffer = FDODeviceExtension->ReportDescriptor;
+    Irp->UserBuffer = FDODeviceExtension->ReportDescriptor;//存在这里
 
     //
     // send request
@@ -387,7 +411,13 @@ HidClassFDO_GetDescriptors(
     return STATUS_SUCCESS;
 }
 
+// 通过发包的形式收集一下信息
 
+//FDODeviceExtension->Common.DeviceDescription
+//FDODeviceExtension->Common.Attributes
+//FDODeviceExtension->Capabilities
+//FDODeviceExtension->HidDescriptor
+//FDODeviceExtension->ReportDescriptor
 NTSTATUS
 HidClassFDO_StartDevice(
     IN PDEVICE_OBJECT DeviceObject,
@@ -403,7 +433,7 @@ HidClassFDO_StartDevice(
     ASSERT(FDODeviceExtension->Common.IsFDO);
 
     //
-    // query capabilities
+    // query capabilities，会向下发同步包
     //
     Status = HidClassFDO_QueryCapabilities(DeviceObject, &FDODeviceExtension->Capabilities);
     if (!NT_SUCCESS(Status))
@@ -414,9 +444,9 @@ HidClassFDO_StartDevice(
         return Status;
     }
 
-    //
-    // let's start the lower device too
-    //
+    //---------------------------------+
+    // let's start the lower device first
+    //---------------------------------+
     IoSkipCurrentIrpStackLocation(Irp);
     Status = HidClassFDO_DispatchRequestSynchronous(DeviceObject, Irp);
     if (!NT_SUCCESS(Status))
@@ -428,7 +458,7 @@ HidClassFDO_StartDevice(
     }
 
     //
-    // let's get the descriptors
+    // let's get the descriptors，有三种，包括最想得到的report descriptor，如何hacker？
     //
     Status = HidClassFDO_GetDescriptors(DeviceObject);
     if (!NT_SUCCESS(Status))
@@ -440,9 +470,12 @@ HidClassFDO_StartDevice(
     }
 
     //
-    // now get the the collection description
+    // now get the the collection description，不发包，只调用系统函数
     //
-    Status = HidP_GetCollectionDescription(FDODeviceExtension->ReportDescriptor, FDODeviceExtension->HidDescriptor.DescriptorList[0].wReportLength, NonPagedPool, &FDODeviceExtension->Common.DeviceDescription);
+    Status = HidP_GetCollectionDescription(FDODeviceExtension->ReportDescriptor, //通过IOCTL_HID_GET_REPORT_DESCRIPTOR得到的
+	               FDODeviceExtension->HidDescriptor.DescriptorList[0].wReportLength,
+				   NonPagedPool, 
+	               &FDODeviceExtension->Common.DeviceDescription);//输出
     if (!NT_SUCCESS(Status))
     {
         DPRINT1("[HIDCLASS] Failed to retrieve the collection description %x\n", Status);
@@ -459,6 +492,7 @@ HidClassFDO_StartDevice(
     return Status;
 }
 
+//detach and delete，这么简单？
 NTSTATUS
 HidClassFDO_RemoveDevice(
     IN PDEVICE_OBJECT DeviceObject,
@@ -475,9 +509,9 @@ HidClassFDO_RemoveDevice(
 
     /* FIXME cleanup */
 
-    //
-    // dispatch to minidriver
-    //
+    //---------------------------------+
+    // let's remove the lower device first
+    //---------------------------------+
     IoSkipCurrentIrpStackLocation(Irp);
     Status = HidClassFDO_DispatchRequestSynchronous(DeviceObject, Irp);
 
@@ -496,6 +530,9 @@ HidClassFDO_RemoveDevice(
     return Status;
 }
 
+//会分配DEVICE_RELATIONS内存，调用者负责释放
+//为什么会有这个函数？
+//保存在fdo的设备扩展里面，复制一份出来而已，要给上层用
 NTSTATUS
 HidClassFDO_CopyDeviceRelations(
     IN PDEVICE_OBJECT DeviceObject,
@@ -554,6 +591,7 @@ HidClassFDO_CopyDeviceRelations(
     return STATUS_SUCCESS;
 }
 
+//不光是查询，还会创建pdo
 NTSTATUS
 HidClassFDO_DeviceRelations(
     IN PDEVICE_OBJECT DeviceObject,
@@ -626,6 +664,7 @@ HidClassFDO_DeviceRelations(
     return Status;
 }
 
+//针对fdo的pnp
 NTSTATUS
 HidClassFDO_PnP(
     IN PDEVICE_OBJECT DeviceObject,
