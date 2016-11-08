@@ -24,7 +24,7 @@ typedef struct _HIDP_COLLECTION_DESC {
   USHORT                            OutputLength; // maximum length
   USHORT                            FeatureLength;// maximum length
   USHORT                            PreparsedDataLength;
-  PHIDP_PREPARSED_DATA              PreparsedData;
+  PHIDP_PREPARSED_DATA              PreparsedData; //IOCTL_HID_GET_COLLECTION_DESCRIPTOR要这个
 } HIDP_COLLECTION_DESC, *PHIDP_COLLECTION_DESC;
 
 */
@@ -32,7 +32,7 @@ typedef struct _HIDP_COLLECTION_DESC {
 PHIDP_COLLECTION_DESC
 HidClassPDO_GetCollectionDescription( //很简单的查找
     PHIDP_DEVICE_DESC DeviceDescription,
-    ULONG CollectionNumber)
+    ULONG CollectionNumber) //查找依据
 {
     ULONG Index;
 
@@ -69,7 +69,7 @@ typedef struct _HIDP_REPORT_IDS {
 PHIDP_REPORT_IDS
 HidClassPDO_GetReportDescription( //很简单的查找
     PHIDP_DEVICE_DESC DeviceDescription,
-    ULONG CollectionNumber)
+    ULONG CollectionNumber) //查找依据
 {
     ULONG Index;
 
@@ -163,7 +163,7 @@ HidClassPDO_HandleQueryDeviceId( //交给minidriver来做
     // store result
     //
     DPRINT("NewBuffer %S\n", NewBuffer);
-    Irp->IoStatus.Information = (ULONG_PTR)NewBuffer;//换成带DivceID的字符串内存地址
+    Irp->IoStatus.Information = (ULONG_PTR)NewBuffer;//替换成带DivceID的字符串内存地址
     return STATUS_SUCCESS;
 }
 
@@ -472,16 +472,14 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
             // copy capabilities
             //
             RtlCopyMemory(IoStack->Parameters.DeviceCapabilities.Capabilities,
-                          &PDODeviceExtension->Capabilities,
+                          &PDODeviceExtension->Capabilities, //已经在fdo的StartDevice时获得
                           sizeof(DEVICE_CAPABILITIES));
             Status = STATUS_SUCCESS;
             break;
         }
-        case IRP_MN_QUERY_BUS_INFORMATION: //告诉：我们是HID bus，我们是pnp bus
+        case IRP_MN_QUERY_BUS_INFORMATION: //告诉上层的：我们是HID bus，我们是pnp bus
         {
-            //
-            //
-            //
+
             BusInformation = ExAllocatePoolWithTag(NonPagedPool, sizeof(PNP_BUS_INFORMATION), HIDCLASS_TAG);
 
             //
@@ -680,6 +678,9 @@ typedef struct _DEVICE_RELATIONS {
 } DEVICE_RELATIONS, *PDEVICE_RELATIONS;
 */
 //输入fdo，输出pdo
+//输出多少个pdo，要看collection的数量：DeviceDescription.CollectionDescLength
+//创建pdo的同时，会创建DEVICE_RELATIONS，需要调用者释放
+//注意这里创建的pdo没有attach之类的动作，无法attach，这是另一个设备堆栈的开始！
 NTSTATUS
 HidClassPDO_CreatePDO(
     IN PDEVICE_OBJECT DeviceObject, //fdo
@@ -700,7 +701,7 @@ HidClassPDO_CreatePDO(
     ASSERT(FDODeviceExtension->Common.IsFDO);
 
 	//------------------------------------------------------
-    // 分配DeviceRelations
+    // 分配DeviceRelations所需内存空间
     //------------------------------------------------------
     //
     // first allocate device relations，有几个collection就有几个pdo device
@@ -751,7 +752,7 @@ HidClassPDO_CreatePDO(
         //
         // patch stack size
         //
-        PDODeviceObject->StackSize = DeviceObject->StackSize + 1;
+        PDODeviceObject->StackSize = DeviceObject->StackSize + 1; //在fdo的基础上+1，也对
 
         //
         // get device extension
@@ -767,17 +768,16 @@ HidClassPDO_CreatePDO(
         PDODeviceExtension->Common.HidDeviceExtension.PhysicalDeviceObject = FDODeviceExtension->Common.HidDeviceExtension.PhysicalDeviceObject;
         PDODeviceExtension->Common.DriverExtension = FDODeviceExtension->Common.DriverExtension;//驱动扩展
 		
-		PDODeviceExtension->Common.IsFDO = FALSE; //本设备对象是pdo
+		PDODeviceExtension->Common.IsFDO = FALSE; //创建的设备对象是pdo
 		
 		//要能找到fdo才好
-        PDODeviceExtension->FDODeviceExtension = FDODeviceExtension;
-        PDODeviceExtension->FDODeviceObject = DeviceObject; //输入参数是fdo
+        PDODeviceExtension->FDODeviceExtension = FDODeviceExtension; //来自于DeviceObject
+        PDODeviceExtension->FDODeviceObject = DeviceObject; //输入参数，fdo
         
         PDODeviceExtension->CollectionNumber = FDODeviceExtension->Common.DeviceDescription.CollectionDesc[Index].CollectionNumber;
 
         //
-        // copy device data，说明pdo和fdo的很多属性是一样的
-        //
+        // copy device data，把Attributes、DeviceDescription、Capabilities保存到pdo，用起来方便
         RtlCopyMemory(&PDODeviceExtension->Common.Attributes, &FDODeviceExtension->Common.Attributes, sizeof(HID_DEVICE_ATTRIBUTES));
         RtlCopyMemory(&PDODeviceExtension->Common.DeviceDescription, &FDODeviceExtension->Common.DeviceDescription, sizeof(HIDP_DEVICE_DESC));
         RtlCopyMemory(&PDODeviceExtension->Capabilities, &FDODeviceExtension->Capabilities, sizeof(DEVICE_CAPABILITIES));
@@ -795,7 +795,7 @@ HidClassPDO_CreatePDO(
         //--------------------------------
         // store device object in device relations
         //--------------------------------
-        DeviceRelations->Objects[Index] = PDODeviceObject;
+        DeviceRelations->Objects[Index] = PDODeviceObject; //顺手放在DeviceRelations，太顺手了
         DeviceRelations->Count++;
 
         //
