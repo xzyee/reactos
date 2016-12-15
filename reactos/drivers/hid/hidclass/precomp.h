@@ -13,7 +13,7 @@
 关于NextDeviceObject：
 (1)minidriver FDO对应的设备对象之下层设备对象
 (2)把本层minidriver不处理的irp传递到下层去处理
-(3)本层minidriver实际上由HIDClass代替了，只是少许函数
+(3)minidriver的drvobj的派遣函数被HIDClass代替了
 typedef struct _HID_DEVICE_EXTENSION { 
 	PDEVICE_OBJECT PhysicalDeviceObject; 
 	PDEVICE_OBJECT NextDeviceObject; 
@@ -23,10 +23,10 @@ The HID_DEVICE_EXTENSION structure is used by a HID minidriver as its layout
 for the device extension of a HIDClass device's functional device object.
 
 */
-typedef struct //这是所有HID设备都遵循的驱动扩展，注册的是minidriver的东西，本驱动(HIDClass)直接使用
+typedef struct //这是所有HID设备都遵循的驱动扩展，for minidriver，鸠占鹊巢，this is magic!
 {
-    PDRIVER_OBJECT DriverObject;
-    ULONG DeviceExtensionSize;
+    PDRIVER_OBJECT DriverObject;//将指向minidriver的drvobj，比如hidusb的drvobj
+    ULONG DeviceExtensionSize;//由于hidcalss的HidClassAddDevice代为创建fdo或者pdo的设备扩展，所以需要知道minidriver的设备扩展大小
     BOOLEAN DevicesArePolled;
     PDRIVER_DISPATCH MajorFunction[IRP_MJ_MAXIMUM_FUNCTION + 1];
     PDRIVER_ADD_DEVICE AddDevice;
@@ -36,11 +36,11 @@ typedef struct //这是所有HID设备都遵循的驱动扩展，注册的是min
 
 typedef struct
 {
-	BOOLEAN IsFDO;
-	PHIDCLASS_DRIVER_EXTENSION DriverExtension;//通过IoGetDriverObjectExtension得到，是minidriver的驱动扩展
+    BOOLEAN IsFDO;
+    PHIDCLASS_DRIVER_EXTENSION DriverExtension;//通过IoGetDriverObjectExtension得到，是minidriver的驱动扩展
     HID_DEVICE_EXTENSION HidDeviceExtension;//在AddDevice中创建设备对象以后被设置
 	
-	//以下二行在fdo的StartDevcie中通过irp包查询到
+    //以下二行在fdo的StartDevcie中通过irp包查询到,为了方便使用，放在这里
     HIDP_DEVICE_DESC DeviceDescription;// device description，
     HID_DEVICE_ATTRIBUTES Attributes;// hid attributes
 } HIDCLASS_COMMON_DEVICE_EXTENSION, *PHIDCLASS_COMMON_DEVICE_EXTENSION;
@@ -52,7 +52,7 @@ typedef struct
     //
     HIDCLASS_COMMON_DEVICE_EXTENSION Common;
 
-	//以下三行在fdo的StartDevcie中通过irp包查询到
+    //以下三行在fdo的StartDevcie中通过irp包查询到
     DEVICE_CAPABILITIES Capabilities;
     HID_DESCRIPTOR HidDescriptor;
     PUCHAR ReportDescriptor; //FDO才会有，用于获取Collection
@@ -67,6 +67,8 @@ typedef struct
 typedef struct
 {
     HIDCLASS_COMMON_DEVICE_EXTENSION Common;
+    
+    //以下pdo才有
     DEVICE_CAPABILITIES Capabilities;
     ULONG CollectionNumber; //相当于pdo序号
     UNICODE_STRING DeviceInterface; //pdo独有
