@@ -34,10 +34,6 @@ HidClassFDO_QueryCapabilitiesCompletionRoutine(
 
 //子函数，被HidClassFDO_StartDevice调用
 //向下层发送pnp同步包：IRP_MN_QUERY_CAPABILITIES
-//问题：哪个层会发送IRP_MN_QUERY_CAPABILITIES请求设备的能力？
-//答案：HIDClass
-//问题：什么时候？
-//答案：在startdevice的时候
 NTSTATUS
 HidClassFDO_QueryCapabilities(
     IN PDEVICE_OBJECT DeviceObject,
@@ -151,7 +147,6 @@ HidClassFDO_DispatchRequestSynchronousCompletion(
 }
 
 //同步调用minidriver
-//用这种形式发送同步包，等返回后irp可能携带这处理后的最新信息
 NTSTATUS
 HidClassFDO_DispatchRequestSynchronous(
     IN PDEVICE_OBJECT DeviceObject,
@@ -181,8 +176,7 @@ HidClassFDO_DispatchRequestSynchronous(
     //
     // create stack location:sets the IRP stack location in a driver-allocated IRP to that of the caller.
     //
-    IoSetNextIrpStackLocation(Irp);//这里，非常值得研究
-
+    IoSetNextIrpStackLocation(Irp);//这里，minidriver是同一层
     //
     // get next stack location
     //
@@ -381,7 +375,7 @@ HidClassFDO_GetDescriptors(
 
 	//----------------------------------------------
 	// 第三步：取ReportDescriptor，UCHAR字符串
-	// 如何拦截IOCTL_HID_GET_REPORT_DESCRIPTOR？
+	// 如何拦截IOCTL_HID_GET_REPORT_DESCRIPTOR？要在minidriver以下安装过滤驱动才行
 	//----------------------------------------------
 
     //
@@ -411,13 +405,12 @@ HidClassFDO_GetDescriptors(
     return STATUS_SUCCESS;
 }
 
-// 通过发包的形式收集一下信息
-
-//FDODeviceExtension->Common.DeviceDescription
-//FDODeviceExtension->Common.Attributes
-//FDODeviceExtension->Capabilities
-//FDODeviceExtension->HidDescriptor
-//FDODeviceExtension->ReportDescriptor
+// 通过发irp包的形式收集以下信息
+//    FDODeviceExtension->Common.DeviceDescription
+//    FDODeviceExtension->Common.Attributes
+//    FDODeviceExtension->Capabilities
+//    FDODeviceExtension->HidDescriptor
+//    FDODeviceExtension->ReportDescriptor再得到FDODeviceExtension->Common.DeviceDescription
 NTSTATUS
 HidClassFDO_StartDevice(
     IN PDEVICE_OBJECT DeviceObject,
@@ -458,7 +451,7 @@ HidClassFDO_StartDevice(
     }
 
     //
-    // let's get the descriptors，有三种，包括最想得到的report descriptor，如何hacker？
+    // let's get the descriptors，有三种，包括最想得到的report descriptor
     //
     Status = HidClassFDO_GetDescriptors(DeviceObject);
     if (!NT_SUCCESS(Status))
@@ -474,7 +467,7 @@ HidClassFDO_StartDevice(
     //
     Status = HidP_GetCollectionDescription(FDODeviceExtension->ReportDescriptor, //通过IOCTL_HID_GET_REPORT_DESCRIPTOR得到的
 	               FDODeviceExtension->HidDescriptor.DescriptorList[0].wReportLength,
-				   NonPagedPool, 
+		       NonPagedPool, 
 	               &FDODeviceExtension->Common.DeviceDescription);//输出
     if (!NT_SUCCESS(Status))
     {
@@ -510,19 +503,19 @@ HidClassFDO_RemoveDevice(
     /* FIXME cleanup */
 
     //---------------------------------+
-    // let's remove the lower device first
+    // let's remove the lower device first！
     //---------------------------------+
     IoSkipCurrentIrpStackLocation(Irp);
     Status = HidClassFDO_DispatchRequestSynchronous(DeviceObject, Irp);
 
     //
-    // complete request
+    // complete request，先完成再删除，学习
     //
     Irp->IoStatus.Status = Status;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
 
     //
-    // detach and delete device
+    // detach and delete device，先完成再删除，学习
     //
     IoDetachDevice(FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject);
     IoDeleteDevice(DeviceObject);
@@ -531,7 +524,6 @@ HidClassFDO_RemoveDevice(
 }
 
 //会分配DEVICE_RELATIONS内存，调用者负责释放
-//为什么会有这个函数？
 //保存在fdo的设备扩展里面，复制一份出来而已，要给上层用
 NTSTATUS
 HidClassFDO_CopyDeviceRelations(
@@ -569,7 +561,7 @@ HidClassFDO_CopyDeviceRelations(
     for (Index = 0; Index < FDODeviceExtension->DeviceRelations->Count; Index++)
     {
         //
-        // reference pdo
+        // reference pdo，不要忘了
         //
         ObReferenceObject(FDODeviceExtension->DeviceRelations->Objects[Index]);
 
@@ -655,7 +647,10 @@ HidClassFDO_DeviceRelations(
     // store result
     //
     Irp->IoStatus.Status = Status;
-    Irp->IoStatus.Information = (ULONG_PTR)DeviceRelations;
+    Irp->IoStatus.Information = (ULONG_PTR)DeviceRelations;//这种方式传出去，查文档看看对不对，对！
+
+    /*资料上说：On success, a driver sets Irp->IoStatus.Information to a PDEVICE_RELATIONS pointer
+      that points to the requested relations information. */
 
     //
     // complete request
