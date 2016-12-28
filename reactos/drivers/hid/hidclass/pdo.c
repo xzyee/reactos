@@ -16,8 +16,8 @@
 #include <debug.h>
 /* 
 typedef struct _HIDP_COLLECTION_DESC {
-  USAGE                             UsagePage;//起硬件ID名字有用
-  USAGE                             Usage;
+  USAGE                             UsagePage;//定义COLLECTION的，起硬件ID名字有用
+  USAGE                             Usage;    //定义COLLECTION的，
   UCHAR                             CollectionNumber;// The index of the collection in the array of HIDP_COLLECTION_DESC structure.基于1
   UCHAR                             Reserved[15];
   USHORT                            InputLength;  // maximum length
@@ -26,8 +26,9 @@ typedef struct _HIDP_COLLECTION_DESC {
   USHORT                            PreparsedDataLength;
   PHIDP_PREPARSED_DATA              PreparsedData; //IOCTL_HID_GET_COLLECTION_DESCRIPTOR要这个
 } HIDP_COLLECTION_DESC, *PHIDP_COLLECTION_DESC;
-
+注意：这个结构构成一个数组，数组的长度在DeviceDescription中可以找到
 */
+
 //找第几个collection的具体描述信息
 PHIDP_COLLECTION_DESC
 HidClassPDO_GetCollectionDescription( //很简单的查找
@@ -93,7 +94,7 @@ HidClassPDO_GetReportDescription( //很简单的查找
 }
 
 NTSTATUS
-HidClassPDO_HandleQueryDeviceId( //交给minidriver来做
+HidClassPDO_HandleQueryDeviceId( //交给minidriver来做，因为minidriver有直接的处理
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP Irp)
 {
@@ -167,7 +168,7 @@ HidClassPDO_HandleQueryDeviceId( //交给minidriver来做
     return STATUS_SUCCESS;
 }
 
-//这硬件ID可够长的,记得这种长的硬件ID是HIDClass产生的哦
+//这硬件ID可够长的,记得这种长的硬件ID是HIDClass产生的
 //看看雷蛇3.5G鼠标中的键盘的硬件ID
 //    HID\VID_1532&PID_0016&DID_0000&MI_02
 //    HID\VID_1532&PID_0016&MI_02
@@ -182,7 +183,7 @@ HidClassPDO_HandleQueryDeviceId( //交给minidriver来做
 //    HID_DEVICE
 
 NTSTATUS
-HidClassPDO_HandleQueryHardwareId( //交给minidriver来做：拒绝？
+HidClassPDO_HandleQueryHardwareId( //交给minidriver来做
     IN PDEVICE_OBJECT DeviceObject,
     IN PIRP Irp)
 {
@@ -216,20 +217,19 @@ HidClassPDO_HandleQueryHardwareId( //交给minidriver来做：拒绝？
         return Status;
     }
 
-	//下面根本没有用到minidriver返回的东西，为什么？
+    //下面根本没有用到minidriver返回的东西，为什么？
+    //注意熟悉什么是single-tlc device和multi-tlc device
     if (PDODeviceExtension->Common.DeviceDescription.CollectionDescLength > 1)
     {
         //
-        // multi-tlc device
-        // 区别在于多了个版本号，其他相同
+        // multi-tlc device的处理，区别在于多了个版本号，其他相同
         Offset  = swprintf(&Buffer[Offset], L"HID\\Vid_%04x&Pid_%04x&Rev_%04x&Col%02x", PDODeviceExtension->Common.Attributes.VendorID, PDODeviceExtension->Common.Attributes.ProductID, PDODeviceExtension->Common.Attributes.VersionNumber, PDODeviceExtension->CollectionNumber) + 1;
         Offset += swprintf(&Buffer[Offset], L"HID\\Vid_%04x&Pid_%04x&Col%02x", PDODeviceExtension->Common.Attributes.VendorID, PDODeviceExtension->Common.Attributes.ProductID, PDODeviceExtension->CollectionNumber) + 1;
     }
     else
     {
         //
-        // single tlc device
-        // 没有collction号
+        // single tlc device的处理没有collction号
         Offset  = swprintf(&Buffer[Offset],L"HID\\Vid_%04x&Pid_%04x&Rev_%04x", PDODeviceExtension->Common.Attributes.VendorID, PDODeviceExtension->Common.Attributes.ProductID, PDODeviceExtension->Common.Attributes.VersionNumber) + 1;
         Offset += swprintf(&Buffer[Offset],L"HID\\Vid_%04x&Pid_%04x", PDODeviceExtension->Common.Attributes.VendorID, PDODeviceExtension->Common.Attributes.ProductID) + 1;
     }
@@ -472,12 +472,12 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
             // copy capabilities
             //
             RtlCopyMemory(IoStack->Parameters.DeviceCapabilities.Capabilities,
-                          &PDODeviceExtension->Capabilities, //已经在fdo的StartDevice时获得
+                          &PDODeviceExtension->Capabilities, //已经在fdo的StartDevice时获得了，Capabilities并部分fdo的还是pdo的
                           sizeof(DEVICE_CAPABILITIES));
             Status = STATUS_SUCCESS;
             break;
         }
-        case IRP_MN_QUERY_BUS_INFORMATION: //告诉上层的：我们是HID bus，我们是pnp bus
+        case IRP_MN_QUERY_BUS_INFORMATION: //告诉上层的：我们是HID bus，我们是pnp bus，为什么pdo来响应呢？
         {
 
             BusInformation = ExAllocatePoolWithTag(NonPagedPool, sizeof(PNP_BUS_INFORMATION), HIDCLASS_TAG);
@@ -496,15 +496,15 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
             Status = STATUS_SUCCESS;
             break;
         }
-        case IRP_MN_QUERY_PNP_DEVICE_STATE: //?
-        {
+        case IRP_MN_QUERY_PNP_DEVICE_STATE: //设备启动以后（ IRP_MN_START_DEVICE返回成功以后）的第一次启动，或者调用IoInvalidateDeviceState以后
+        {                                   //信息存在 Irp->IoStatus.Information中，按照bitmap的形式，是个ULONG 
             //
             // FIXME set flags when driver fails / disabled
             //
             Status = STATUS_SUCCESS;
             break;
         }
-        case IRP_MN_QUERY_DEVICE_RELATIONS: //只支持TargetDeviceRelation
+        case IRP_MN_QUERY_DEVICE_RELATIONS: //pdo只支持TargetDeviceRelation
         {
             //
             // only target relations are supported
@@ -535,13 +535,13 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
             // init device relation
             //
             DeviceRelation->Count = 1;
-            DeviceRelation->Objects[0] = DeviceObject; //把自己拧出去？
+            DeviceRelation->Objects[0] = DeviceObject; //把自己拧出去
             ObReferenceObject(DeviceRelation->Objects[0]);
 
             //
             // store result
             //
-            Irp->IoStatus.Information = (ULONG_PTR)DeviceRelation;
+            Irp->IoStatus.Information = (ULONG_PTR)DeviceRelation;//LONG这样的可以这样返回，学习
             Status = STATUS_SUCCESS;
             break;
         }
@@ -563,7 +563,7 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
             if (NT_SUCCESS(Status))
             {
                 //----------------------------------------------------
-                // 使能接口实例,很容易忘啊
+                // 使能接口实例,很容易忘
                 //----------------------------------------------------
                 Status = IoSetDeviceInterfaceState(&PDODeviceExtension->DeviceInterface, TRUE);
                 DPRINT("[HIDCLASS] IoSetDeviceInterFaceState %x\n", Status);
@@ -577,8 +577,8 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
         }
         case IRP_MN_REMOVE_DEVICE:
         {
-	        //----------------------------------------------------
-            // 不使能接口实例
+	    //----------------------------------------------------
+            // 失能接口实例
             //----------------------------------------------------
 
             if (PDODeviceExtension->DeviceInterface.Length != 0)
@@ -662,7 +662,7 @@ HidClassPDO_PnP( //注意到PDO和FDO都有各自的pnp处理，不能混为一�
         //
         // complete request
         //
-        IoCompleteRequest(Irp, IO_NO_INCREMENT);
+        IoCompleteRequest(Irp, IO_NO_INCREMENT);//这些irp在此就完成了
     }
 
     //
@@ -682,7 +682,7 @@ typedef struct _DEVICE_RELATIONS {
 //创建pdo的同时，会创建DEVICE_RELATIONS，需要调用者释放
 //注意这里创建的pdo没有attach之类的动作，无法attach，这是另一个设备堆栈的开始！
 NTSTATUS
-HidClassPDO_CreatePDO(
+HidClassPDO_CreatePDO( //因为HIDClass同时有fdo和pdo，所以pdo和fdo之间没有attach关系，pdo和fdo之间的“连线”代表另一个堆栈的开始
     IN PDEVICE_OBJECT DeviceObject, //fdo
     OUT PDEVICE_RELATIONS *OutDeviceRelations)
 {
@@ -700,7 +700,7 @@ HidClassPDO_CreatePDO(
     FDODeviceExtension = DeviceObject->DeviceExtension;
     ASSERT(FDODeviceExtension->Common.IsFDO);
 
-	//------------------------------------------------------
+    //------------------------------------------------------
     // 分配DeviceRelations所需内存空间
     //------------------------------------------------------
     //
@@ -721,7 +721,7 @@ HidClassPDO_CreatePDO(
     //
     RtlZeroMemory(DeviceRelations, Length);
 
-	//------------------------------------------------------
+    //------------------------------------------------------
     // 为顶层collections的每一个collection创建一个pdo
     //------------------------------------------------------
     //
@@ -761,16 +761,16 @@ HidClassPDO_CreatePDO(
 
         //--------------------------------
         // init device extension
-		//--------------------------------
+	//--------------------------------
         // 下面4行全相当于拷贝
         PDODeviceExtension->Common.HidDeviceExtension.MiniDeviceExtension = FDODeviceExtension->Common.HidDeviceExtension.MiniDeviceExtension;
         PDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject = FDODeviceExtension->Common.HidDeviceExtension.NextDeviceObject;
         PDODeviceExtension->Common.HidDeviceExtension.PhysicalDeviceObject = FDODeviceExtension->Common.HidDeviceExtension.PhysicalDeviceObject;
         PDODeviceExtension->Common.DriverExtension = FDODeviceExtension->Common.DriverExtension;//驱动扩展
 		
-		PDODeviceExtension->Common.IsFDO = FALSE; //创建的设备对象是pdo
+	PDODeviceExtension->Common.IsFDO = FALSE; //创建的设备对象是pdo
 		
-		//要能找到fdo才好
+	//要能找到fdo才好
         PDODeviceExtension->FDODeviceExtension = FDODeviceExtension; //来自于DeviceObject
         PDODeviceExtension->FDODeviceObject = DeviceObject; //输入参数，fdo
         
@@ -780,12 +780,12 @@ HidClassPDO_CreatePDO(
         // copy device data，把Attributes、DeviceDescription、Capabilities保存到pdo，用起来方便
         RtlCopyMemory(&PDODeviceExtension->Common.Attributes, &FDODeviceExtension->Common.Attributes, sizeof(HID_DEVICE_ATTRIBUTES));
         RtlCopyMemory(&PDODeviceExtension->Common.DeviceDescription, &FDODeviceExtension->Common.DeviceDescription, sizeof(HIDP_DEVICE_DESC));
-        RtlCopyMemory(&PDODeviceExtension->Capabilities, &FDODeviceExtension->Capabilities, sizeof(DEVICE_CAPABILITIES));
+        RtlCopyMemory(&PDODeviceExtension->Capabilities, &FDODeviceExtension->Capabilities, sizeof(DEVICE_CAPABILITIES));//可见>Capabilities不分fdo还是pdo
 
         //
         // set device flags
         //
-        PDODeviceObject->Flags |= DO_MAP_IO_BUFFER;
+        PDODeviceObject->Flags |= DO_MAP_IO_BUFFER;//？This flag is no longer used. Drivers should not set this flag.？
 
         //
         // device is initialized
