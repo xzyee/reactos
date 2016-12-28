@@ -1,4 +1,3 @@
-
 #ifndef _HIDCLASS_PCH_
 #define _HIDCLASS_PCH_
 
@@ -11,9 +10,8 @@
 #define HIDCLASS_TAG 'CdiH'
 /*
 关于NextDeviceObject：
-(1)minidriver FDO对应的设备对象之下层设备对象
-(2)把本层minidriver不处理的irp传递到下层去处理
-(3)minidriver的drvobj的派遣函数被HIDClass代替了
+(1)位于minidriver FDO下层
+(2)HIDCLass可以把IRP通过NextDeviceObject传递到下层驱动，也可以调用本层minidriver的派遣函数
 typedef struct _HID_DEVICE_EXTENSION { 
 	PDEVICE_OBJECT PhysicalDeviceObject; 
 	PDEVICE_OBJECT NextDeviceObject; 
@@ -21,8 +19,8 @@ typedef struct _HID_DEVICE_EXTENSION {
 } HID_DEVICE_EXTENSION, *PHID_DEVICE_EXTENSION;
 The HID_DEVICE_EXTENSION structure is used by a HID minidriver as its layout
 for the device extension of a HIDClass device's functional device object.
+这里的layout指的是设备扩展的布局，其实就是功能驱动的布局*/
 
-*/
 typedef struct //这是所有HID设备都遵循的驱动扩展，for minidriver，鸠占鹊巢，this is magic!
 {
     PDRIVER_OBJECT DriverObject;//将指向minidriver的drvobj，比如hidusb的drvobj
@@ -55,25 +53,26 @@ typedef struct
     //以下三行在fdo的StartDevcie中通过irp包查询到
     DEVICE_CAPABILITIES Capabilities;
     HID_DESCRIPTOR HidDescriptor;
-    PUCHAR ReportDescriptor; //FDO才会有，用于获取Collection
+    PUCHAR ReportDescriptor; //FDO才会有，用于获取Collections
 
     //
     // device relations
     //
-    PDEVICE_RELATIONS DeviceRelations;//FDO才会有，用于创建pdo
+    PDEVICE_RELATIONS DeviceRelations;//带bus的FDO才会有，Collections就像是bus
 
 } HIDCLASS_FDO_EXTENSION, *PHIDCLASS_FDO_EXTENSION;
 
 typedef struct
 {
-    HIDCLASS_COMMON_DEVICE_EXTENSION Common;
+    HIDCLASS_COMMON_DEVICE_EXTENSION Common;//这种common的东西要学习，放在最前面
     
     //以下pdo才有
     DEVICE_CAPABILITIES Capabilities;
     ULONG CollectionNumber; //相当于pdo序号
     UNICODE_STRING DeviceInterface; //pdo独有
     PDEVICE_OBJECT FDODeviceObject; //pdo在HidClass_Read时要找到fdo，调用fdo的IRP_MJ_INTERNAL_DEVICE_CONTROL处理函数
-    PHIDCLASS_FDO_EXTENSION FDODeviceExtension; //pdo处理IRP_MN_REMOVE_DEVICE要用，主要是DeviceRelations这个pdo表
+    PHIDCLASS_FDO_EXTENSION FDODeviceExtension; //为了方便放在这里，pdo处理IRP_MN_REMOVE_DEVICE要用，
+	                                            //主要是DeviceRelations这个pdo表
 
 } HIDCLASS_PDO_DEVICE_EXTENSION, *PHIDCLASS_PDO_DEVICE_EXTENSION;
 
@@ -90,12 +89,12 @@ typedef struct __HIDCLASS_FILEOP_CONTEXT__
     LIST_ENTRY IrpCompletedListHead; //为了可以重用irp
 
     BOOLEAN StopInProgress; //为了发信号要关闭文件
-    KEVENT IrpReadComplete; //关闭文件时要等待最后一个irp完成
+    KEVENT IrpReadComplete; //等待
 
 } HIDCLASS_FILEOP_CONTEXT, *PHIDCLASS_FILEOP_CONTEXT;
 
 //每IRP
-//以完成函数参数方式达到"每irp"的目的
+//给完成函数用的，就是完成函数要用的一些变量，都放在这里
 typedef struct
 {
 
