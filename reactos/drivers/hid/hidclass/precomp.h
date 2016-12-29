@@ -34,11 +34,14 @@ typedef struct //这是所有HID设备都遵循的驱动扩展，for minidriver�
 
 typedef struct
 {
+    //必须放第一位，否则minidriver在cast时不正确
+    HID_DEVICE_EXTENSION HidDeviceExtension;//在AddDevice中创建设备对象以后被设置
+
     BOOLEAN IsFDO;
     PHIDCLASS_DRIVER_EXTENSION DriverExtension;//通过IoGetDriverObjectExtension得到，是minidriver的驱动扩展
-    HID_DEVICE_EXTENSION HidDeviceExtension;//在AddDevice中创建设备对象以后被设置
-	
-    //以下二行在fdo的StartDevcie中通过irp包查询到,为了方便使用，放在这里
+    
+    
+    //以下在fdo的StartDevcie中通过irp包查询到,为了方便使用，放在这里
     HIDP_DEVICE_DESC DeviceDescription;// device description，
     HID_DEVICE_ATTRIBUTES Attributes;// hid attributes
 } HIDCLASS_COMMON_DEVICE_EXTENSION, *PHIDCLASS_COMMON_DEVICE_EXTENSION;
