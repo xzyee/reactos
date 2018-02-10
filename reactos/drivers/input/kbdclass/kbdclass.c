@@ -4,7 +4,7 @@
  * FILE:            drivers/kbdclass/kbdclass.c
  * PURPOSE:         Keyboard class driver
  *
- * PROGRAMMERS:     Herv� Poussineau (hpoussin@reactos.org)
+ * PROGRAMMERS:     Hervé Poussineau (hpoussin@reactos.org)
  */
 
 #include "kbdclass.h"
@@ -382,11 +382,13 @@ cleanup:
 	DeviceExtension = (PCLASS_DEVICE_EXTENSION)Fdo->DeviceExtension;
 	RtlZeroMemory(DeviceExtension, sizeof(CLASS_DEVICE_EXTENSION));
 	DeviceExtension->Common.IsClassDO = TRUE;
-	DeviceExtension->DriverExtension = DriverExtension;
+	DeviceExtension->DriverExtension = DriverExtension;//上面刚创建的
 	InitializeListHead(&DeviceExtension->ListHead);
 	KeInitializeSpinLock(&DeviceExtension->ListSpinLock);
 	KeInitializeSpinLock(&DeviceExtension->SpinLock);
 	DeviceExtension->InputCount = 0;
+	//下面一行充分说命了所有port(对multi而言)或者对单个port而言，
+	//保存KEYBOARD_INPUT_DATA队列的地方在classdeviceobject中
 	DeviceExtension->PortData = ExAllocatePoolWithTag(NonPagedPool, DeviceExtension->DriverExtension->DataQueueSize * sizeof(KEYBOARD_INPUT_DATA), CLASS_TAG);
 	if (!DeviceExtension->PortData)
 	{
@@ -400,7 +402,7 @@ cleanup:
 
 	/* Add entry entry to HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\[DeviceBaseName] */
 	RtlWriteRegistryValue(
-		RTL_REGISTRY_DEVICEMAP,
+		RTL_REGISTRY_DEVICEMAP, //HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\
 		DriverExtension->DeviceBaseName.Buffer,
 		DeviceExtension->DeviceName,
 		REG_SZ,
@@ -425,13 +427,13 @@ FillEntries(
 	if (ClassDeviceObject->Flags & DO_BUFFERED_IO)
 	{
 		RtlCopyMemory(
-			Irp->AssociatedIrp.SystemBuffer,
+			Irp->AssociatedIrp.SystemBuffer, //buffered IO
 			DataStart,
 			NumberOfEntries * sizeof(KEYBOARD_INPUT_DATA));
 	}
 	else if (ClassDeviceObject->Flags & DO_DIRECT_IO)
 	{
-		PVOID DestAddress = MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority);
+		PVOID DestAddress = MmGetSystemAddressForMdlSafe(Irp->MdlAddress/*direct io*/, NormalPagePriority);
 		if (DestAddress)
 		{
 			RtlCopyMemory(
@@ -463,7 +465,7 @@ FillEntries(
 
 static BOOLEAN NTAPI
 ClassCallback(
-	IN PDEVICE_OBJECT ClassDeviceObject,
+	IN PDEVICE_OBJECT ClassDeviceObject, //具体某classdeviceobject将被传递到kbdhid
 	IN OUT PKEYBOARD_INPUT_DATA DataStart,
 	IN PKEYBOARD_INPUT_DATA DataEnd,
 	IN OUT PULONG ConsumedCount)
@@ -477,7 +479,7 @@ ClassCallback(
 
 	ASSERT(ClassDeviceExtension->Common.IsClassDO);
 
-	KeAcquireSpinLock(&ClassDeviceExtension->SpinLock, &OldIrql);
+	KeAcquireSpinLock(&ClassDeviceExtension->SpinLock, &OldIrql);//在完成函数中执行，因此拿spin锁
 	if (InputCount > 0)
 	{
 		if (ClassDeviceExtension->InputCount + InputCount > ClassDeviceExtension->DriverExtension->DataQueueSize)
@@ -501,12 +503,11 @@ ClassCallback(
 			sizeof(KEYBOARD_INPUT_DATA) * ReadSize);
 
 		/* Move the counter up */
-		ClassDeviceExtension->InputCount += ReadSize;
-
+		ClassDeviceExtension->InputCount += ReadSize;//修改InputCount，这是要拿锁的原因
 		(*ConsumedCount) += (ULONG)ReadSize;
 
-		/* Complete pending IRP (if any) */
-		if (ClassDeviceExtension->PendingIrp)
+		/* Complete pending IRP (if any)，很重要 */
+		if (ClassDeviceExtension->PendingIrp) //PendingIrp也可能被修改为NULL，这也是要拿锁的原因
 			HandleReadIrp(ClassDeviceObject, ClassDeviceExtension->PendingIrp, FALSE);
 	}
 	KeReleaseSpinLock(&ClassDeviceExtension->SpinLock, OldIrql);
@@ -518,8 +519,8 @@ ClassCallback(
 /* Send IOCTL_INTERNAL_*_CONNECT to port */
 static NTSTATUS
 ConnectPortDriver(
-	IN PDEVICE_OBJECT PortDO,
-	IN PDEVICE_OBJECT ClassDO)
+	IN PDEVICE_OBJECT PortDO,//向这个地方发送，不过实际CONNECT_DATA不在PortDO落脚，而是在kbdhid落脚
+	IN PDEVICE_OBJECT ClassDO)//PortDO将挂在此ClassDO保存以归属ClassDO管理
 {
 	KEVENT Event;
 	PIRP Irp;
@@ -534,35 +535,39 @@ ConnectPortDriver(
 	ConnectData.ClassDeviceObject = ClassDO;
 	ConnectData.ClassService      = ClassCallback;
 
+        //创建一个irp把工作干完了
 	Irp = IoBuildDeviceIoControlRequest(
 		IOCTL_INTERNAL_KEYBOARD_CONNECT,
-		PortDO,
+		PortDO, // next-lower driver's device object, which represents the target device
 		&ConnectData, sizeof(CONNECT_DATA),
-		NULL, 0,
-		TRUE, &Event, &IoStatus);
+		NULL, 0, //OutputBuffer and OutputBufferLength
+		TRUE, &Event, &IoStatus); //是InternalDeviceIoControl
 	if (!Irp)
 		return STATUS_INSUFFICIENT_RESOURCES;
 
-	Status = IoCallDriver(PortDO, Irp);
+	Status = IoCallDriver(PortDO, Irp);//发给PortDO
 
 	if (Status == STATUS_PENDING)
 		KeWaitForSingleObject(&Event, Suspended, KernelMode, FALSE, NULL);
 	else
 		IoStatus.Status = Status;
 
-	if (NT_SUCCESS(IoStatus.Status))
+	if (NT_SUCCESS(IoStatus.Status)) //学习这种写法
 	{
-		ObReferenceObject(PortDO);
+		ObReferenceObject(PortDO); //在时detach时去引用
+		
+		//下面把PortDO加入到ClassDO的链表中
 		ExInterlockedInsertTailList(
 			&((PCLASS_DEVICE_EXTENSION)ClassDO->DeviceExtension)->ListHead,
 			&((PPORT_DEVICE_EXTENSION)PortDO->DeviceExtension)->ListEntry,
 			&((PCLASS_DEVICE_EXTENSION)ClassDO->DeviceExtension)->ListSpinLock);
+		
 		if (ClassDO->StackSize <= PortDO->StackSize)
 		{
 			/* Increase the stack size, in case we have to
 			 * forward some IRPs to the port device object
 			 */
-			ClassDO->StackSize = PortDO->StackSize + 1;
+			ClassDO->StackSize = PortDO->StackSize + 1;//很有必要
 		}
 	}
 
@@ -593,13 +598,13 @@ DestroyPortDriver(
 	KeInitializeEvent(&Event, NotificationEvent, FALSE);
 	Irp = IoBuildDeviceIoControlRequest(
 		IOCTL_INTERNAL_KEYBOARD_DISCONNECT,
-		PortDO,
-		NULL, 0,
-		NULL, 0,
-		TRUE, &Event, &IoStatus);
+		PortDO, //目的地
+		NULL, 0, //不用到输入buffer
+		NULL, 0, //不用到输出buffer
+		TRUE, &Event, &IoStatus);//是内部控制命令
 	if (Irp)
 	{
-		Status = IoCallDriver(PortDO, Irp);
+		Status = IoCallDriver(PortDO, Irp);//发给PortDO
 		if (Status == STATUS_PENDING)
 			KeWaitForSingleObject(&Event, Suspended, KernelMode, FALSE, NULL);
 	}
@@ -616,12 +621,13 @@ DestroyPortDriver(
 		ClassDeviceExtension->DeviceName);
 
 	if (DeviceExtension->LowerDevice)
-		IoDetachDevice(DeviceExtension->LowerDevice);
-	ObDereferenceObject(PortDO);
-
+		IoDetachDevice(DeviceExtension->LowerDevice); //PortDO的DeviceExtension，注意是PortDO和下层设备对象连着的
+	ObDereferenceObject(PortDO); //在ConnectPortDriver时拿了一个引用
+ 
+	//当没有multi时，显然应该吧ClassDO一块删掉
 	if (!DriverExtension->ConnectMultiplePorts && DeviceExtension->ClassDO)
 	{
-		ExFreePoolWithTag(ClassDeviceExtension->PortData, CLASS_TAG);
+		ExFreePoolWithTag(ClassDeviceExtension->PortData, CLASS_TAG); //释放给队列分配的内存
 		ExFreePoolWithTag((PVOID)ClassDeviceExtension->DeviceName, CLASS_TAG);
 		IoDeleteDevice(DeviceExtension->ClassDO);
 	}
@@ -641,8 +647,7 @@ ClassAddDevice(
 
 	TRACE_(CLASS_NAME, "ClassAddDevice called. Pdo = 0x%p\n", Pdo);
 
-	DriverExtension = IoGetDriverObjectExtension(DriverObject, DriverObject);
-
+	DriverExtension = IoGetDriverObjectExtension(DriverObject, DriverObject);//想知道multi多少
 	if (Pdo == NULL)
 		/* We may get a NULL Pdo at the first call as we're a legacy driver. Ignore it */
 		return STATUS_SUCCESS;
@@ -650,12 +655,12 @@ ClassAddDevice(
 	/* Create new device object */
 	Status = IoCreateDevice(
 		DriverObject,
-		sizeof(PORT_DEVICE_EXTENSION),
+		sizeof(PORT_DEVICE_EXTENSION), //这是看出是创建PortDO
 		NULL,
-		Pdo->DeviceType,
+		Pdo->DeviceType,//必须为pdo的设备类型
 		Pdo->Characteristics & FILE_DEVICE_SECURE_OPEN ? FILE_DEVICE_SECURE_OPEN : 0,
 		FALSE,
-		&Fdo);
+		&Fdo);//输出
 	if (!NT_SUCCESS(Status))
 	{
 		WARN_(CLASS_NAME, "IoCreateDevice() failed with status 0x%08lx\n", Status);
@@ -665,37 +670,40 @@ ClassAddDevice(
 
 	DeviceExtension = (PPORT_DEVICE_EXTENSION)Fdo->DeviceExtension;
 	RtlZeroMemory(DeviceExtension, sizeof(PORT_DEVICE_EXTENSION));
-	DeviceExtension->Common.IsClassDO = FALSE;
-	DeviceExtension->DeviceObject = Fdo;
+	DeviceExtension->Common.IsClassDO = FALSE;//是PortDO
+	DeviceExtension->DeviceObject = Fdo;//刚创建的
 	DeviceExtension->PnpState = dsStopped;
-	Status = IoAttachDeviceToDeviceStackSafe(Fdo, Pdo, &DeviceExtension->LowerDevice);
+	Status = IoAttachDeviceToDeviceStackSafe(Fdo, Pdo, &DeviceExtension->LowerDevice);//可见PortDO与kbdhid相连
 	if (!NT_SUCCESS(Status))
 	{
 		WARN_(CLASS_NAME, "IoAttachDeviceToDeviceStackSafe() failed with status 0x%08lx\n", Status);
 		goto cleanup;
 	}
-	if (DeviceExtension->LowerDevice->Flags & DO_POWER_PAGABLE)
+	
+	//下面可见刚创建的PortDO是过滤驱动程序
+	if (DeviceExtension->LowerDevice->Flags & DO_POWER_PAGABLE) //等于低层设备对象的flag
 		Fdo->Flags |= DO_POWER_PAGABLE;
-	if (DeviceExtension->LowerDevice->Flags & DO_BUFFERED_IO)
+	if (DeviceExtension->LowerDevice->Flags & DO_BUFFERED_IO)//等于低层设备对象的flag
 		Fdo->Flags |= DO_BUFFERED_IO;
-	if (DeviceExtension->LowerDevice->Flags & DO_DIRECT_IO)
+	if (DeviceExtension->LowerDevice->Flags & DO_DIRECT_IO)//等于低层设备对象的flag
 		Fdo->Flags |= DO_DIRECT_IO;
 
 	if (DriverExtension->ConnectMultiplePorts)
-		DeviceExtension->ClassDO = DriverExtension->MainClassDeviceObject;
+		DeviceExtension->ClassDO = DriverExtension->MainClassDeviceObject;//mainClassDO已经创建了，DriverEntry中
 	else
 	{
 		/* We need a new class device object for this Fdo */
+		//一对一，一个ClassDO对应一个PortDO
 		Status = CreateClassDeviceObject(
 			DriverObject,
-			&DeviceExtension->ClassDO);
+			&DeviceExtension->ClassDO);//创建后也没怎么样，就是下面connect一下，算是把PortDO和ClassDO联系起来了
 		if (!NT_SUCCESS(Status))
 		{
 			WARN_(CLASS_NAME, "CreateClassDeviceObject() failed with status 0x%08lx\n", Status);
 			goto cleanup;
 		}
 	}
-	Status = ConnectPortDriver(Fdo, DeviceExtension->ClassDO);
+	Status = ConnectPortDriver(Fdo, DeviceExtension->ClassDO);//算是把PortDO和ClassDO联系起来了
 	if (!NT_SUCCESS(Status))
 	{
 		WARN_(CLASS_NAME, "ConnectPortDriver() failed with status 0x%08lx\n", Status);
@@ -705,11 +713,11 @@ ClassAddDevice(
 
 	/* Register interface ; ignore the error (if any) as having
 	 * a registred interface is not so important... */
-	Status = IoRegisterDeviceInterface(
-		Pdo,
-		&GUID_DEVINTERFACE_KEYBOARD,
+	Status = IoRegisterDeviceInterface( //注册接口并创建一个该类接口的实例，接下来可被使能
+		Pdo,//IO manager传来我们需要的
+		&GUID_DEVINTERFACE_KEYBOARD,//键盘接口类
 		NULL,
-		&DeviceExtension->InterfaceName);
+		&DeviceExtension->InterfaceName);//输出一个接口名，保存起来，在接下来PortDO收到IRP_MN_START_DEVICE时再打开用
 	if (!NT_SUCCESS(Status))
 		DeviceExtension->InterfaceName.Length = 0;
 
@@ -723,7 +731,7 @@ cleanup:
 
 static VOID NTAPI
 ClassCancelRoutine(
-	IN PDEVICE_OBJECT DeviceObject,
+	IN PDEVICE_OBJECT DeviceObject,//ClassDO，因为PendingIrp挂在ClassDO的设备扩展上
 	IN PIRP Irp)
 {
 	PCLASS_DEVICE_EXTENSION ClassDeviceExtension = DeviceObject->DeviceExtension;
@@ -732,15 +740,13 @@ ClassCancelRoutine(
 
 	TRACE_(CLASS_NAME, "ClassCancelRoutine(DeviceObject %p, Irp %p)\n", DeviceObject, Irp);
 
-	ASSERT(ClassDeviceExtension->Common.IsClassDO);
-
-	IoReleaseCancelSpinLock(Irp->CancelIrql);
-
+	ASSERT(ClassDeviceExtension->Common.IsClassDO);//此时必须ClassDO拥有irp
+	IoReleaseCancelSpinLock(Irp->CancelIrql); //在某个竞争环境中已经拿了spin锁，所以这里要释放锁
 	KeAcquireSpinLock(&ClassDeviceExtension->SpinLock, &OldIrql);
 
 	if (ClassDeviceExtension->PendingIrp == Irp)
 	{
-		ClassDeviceExtension->PendingIrp = NULL;
+		ClassDeviceExtension->PendingIrp = NULL;//将被直接以STATUS_CANCELLED的方式完成，不会再有挂着未完成的irp了
 		wasQueued = TRUE;
 	}
 	KeReleaseSpinLock(&ClassDeviceExtension->SpinLock, OldIrql);
@@ -749,7 +755,7 @@ ClassCancelRoutine(
 	{
 		Irp->IoStatus.Status = STATUS_CANCELLED;
 		Irp->IoStatus.Information = 0;
-		IoCompleteRequest(Irp, IO_NO_INCREMENT);
+		IoCompleteRequest(Irp, IO_NO_INCREMENT);//所谓的cancle就是以STATUS_CANCELLED的方式完成
 	}
 	else
 	{
@@ -759,7 +765,7 @@ ClassCancelRoutine(
 
 static NTSTATUS
 HandleReadIrp(
-	IN PDEVICE_OBJECT DeviceObject,
+	IN PDEVICE_OBJECT DeviceObject, //ClassPDO负责场面上的事情（读，取消）
 	IN PIRP Irp,
 	BOOLEAN IsInStartIo)
 {
@@ -771,7 +777,7 @@ HandleReadIrp(
 
 	ASSERT(DeviceExtension->Common.IsClassDO);
 
-	if (DeviceExtension->InputCount > 0)
+	if (DeviceExtension->InputCount > 0) //缓冲区有键盘输入（KEYBOARD_INPUT_DATA）
 	{
 		SIZE_T NumberOfEntries;
 
@@ -803,14 +809,16 @@ HandleReadIrp(
 		/* Go to next packet and complete this request */
 		Irp->IoStatus.Status = Status;
 
-		(VOID)IoSetCancelRoutine(Irp, NULL);
-		IoCompleteRequest(Irp, IO_KEYBOARD_INCREMENT);
+		(VOID)IoSetCancelRoutine(Irp, NULL);//irp不可取消了，此时应当是拿着spin锁的
+		IoCompleteRequest(Irp, IO_KEYBOARD_INCREMENT);//成功地完成了一次键盘输入
 		DeviceExtension->PendingIrp = NULL;
 	}
 	else
 	{
-		IoAcquireCancelSpinLock(&OldIrql);
-		if (Irp->Cancel)
+		//缓冲区空空的，IRP只能挂在那里了
+		IoAcquireCancelSpinLock(&OldIrql); // synchronizes cancelable-state transitions for IRPs 
+		                                   //in a multiprocessor-safe way.
+		if (Irp->Cancel) //注意这是个布尔变量
 		{
 			DeviceExtension->PendingIrp = NULL;
 			Status = STATUS_CANCELLED;
