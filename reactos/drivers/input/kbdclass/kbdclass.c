@@ -858,7 +858,7 @@ ClassPnp(
 										   NULL,
 										   NULL);
 
-				Status = ZwOpenFile(&DeviceExtension->FileHandle,
+				Status = ZwOpenFile(&DeviceExtension->FileHandle, //输出
 									FILE_READ_DATA,
 									&ObjectAttributes,
 									&Iosb,
