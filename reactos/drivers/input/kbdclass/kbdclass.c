@@ -382,7 +382,7 @@ cleanup:
 	DeviceExtension = (PCLASS_DEVICE_EXTENSION)Fdo->DeviceExtension;
 	RtlZeroMemory(DeviceExtension, sizeof(CLASS_DEVICE_EXTENSION));
 	DeviceExtension->Common.IsClassDO = TRUE;
-	DeviceExtension->DriverExtension = DriverExtension;//上面刚创建的
+	DeviceExtension->DriverExtension = DriverExtension;//上面刚找回的
 	InitializeListHead(&DeviceExtension->ListHead);
 	KeInitializeSpinLock(&DeviceExtension->ListSpinLock);
 	KeInitializeSpinLock(&DeviceExtension->SpinLock);
@@ -403,9 +403,9 @@ cleanup:
 	/* Add entry entry to HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\[DeviceBaseName] */
 	RtlWriteRegistryValue(
 		RTL_REGISTRY_DEVICEMAP, //HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\
-		DriverExtension->DeviceBaseName.Buffer,
-		DeviceExtension->DeviceName,
-		REG_SZ,
+		DriverExtension->DeviceBaseName.Buffer, //PATH
+		DeviceExtension->DeviceName,  //ValueName
+		REG_SZ,                       //ValueType
 		DriverExtension->RegistryPath.Buffer,
 		DriverExtension->RegistryPath.MaximumLength);
 
