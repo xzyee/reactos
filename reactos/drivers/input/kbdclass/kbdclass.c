@@ -382,7 +382,7 @@ cleanup:
 	DeviceExtension = (PCLASS_DEVICE_EXTENSION)Fdo->DeviceExtension;
 	RtlZeroMemory(DeviceExtension, sizeof(CLASS_DEVICE_EXTENSION));
 	DeviceExtension->Common.IsClassDO = TRUE;
-	DeviceExtension->DriverExtension = DriverExtension;//上面刚找回的
+	DeviceExtension->DriverExtension = DriverExtension;//上面刚找回的,在DiverEntry中创建的
 	InitializeListHead(&DeviceExtension->ListHead);
 	KeInitializeSpinLock(&DeviceExtension->ListSpinLock);
 	KeInitializeSpinLock(&DeviceExtension->SpinLock);
