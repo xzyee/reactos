@@ -64,7 +64,7 @@ GetPortStatusAndChange(
                           sizeof(Urb->UrbControlVendorClassRequest),
                           USBD_TRANSFER_DIRECTION_OUT,
                           0,
-                          USB_REQUEST_GET_STATUS,
+                          USB_REQUEST_GET_STATUS,//命令
                           0,
                           PortId,
                           StatusChange,
@@ -73,7 +73,7 @@ GetPortStatusAndChange(
                           0);
 
     // FIXME: support usb hubs
-    Urb->UrbHeader.UsbdDeviceHandle = NULL;
+    Urb->UrbHeader.UsbdDeviceHandle = NULL;//为何？没有具体的设备？
 
 
     //
@@ -121,7 +121,7 @@ SetPortFeature(
                           sizeof(Urb->UrbControlVendorClassRequest),
                           USBD_TRANSFER_DIRECTION_IN,
                           0,
-                          USB_REQUEST_SET_FEATURE,
+                          USB_REQUEST_SET_FEATURE,//命令
                           Feature,
                           PortId,
                           NULL,
@@ -130,8 +130,7 @@ SetPortFeature(
                           0);
 
     // FIXME support usbhubs
-    Urb->UrbHeader.UsbdDeviceHandle = NULL;
-
+    Urb->UrbHeader.UsbdDeviceHandle = NULL;//为何？没有具体的设备？
     //
     // Query the Root Hub
     //
@@ -281,7 +280,7 @@ DeviceStatusChangeThread(
                 if (!NT_SUCCESS(Status))
                 {
                     DPRINT1("Failed to reset port %d\n", PortId);
-                    SignalResetComplete = TRUE;
+                    SignalResetComplete = TRUE; //为何失败了要触发事件？
                     continue;
                 }
             }
@@ -446,7 +445,7 @@ QueryStatusChangeEndpoint(
     PURB PendingSCEUrb;
 
     HubDeviceExtension = (PHUB_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
-    RootHubDeviceObject = HubDeviceExtension->RootHubPhysicalDeviceObject;
+    RootHubPhysicalDeviceObject = HubDeviceExtension->RootHubPhysicalDeviceObject;
 
     //
     // Allocate a URB
@@ -489,9 +488,9 @@ QueryStatusChangeEndpoint(
     //
     // Initialize the IRP
     //
-    IoInitializeIrp(HubDeviceExtension->PendingSCEIrp,
-                    IoSizeOfIrp(RootHubDeviceObject->StackSize),
-                    RootHubDeviceObject->StackSize);
+    IoInitializeIrp(HubDeviceExtension->PendingSCEIrp, 
+                    IoSizeOfIrp(RootHubPhysicalDeviceObject->StackSize),
+                    RootHubPhysicalDeviceObject->StackSize);
 
     HubDeviceExtension->PendingSCEIrp->IoStatus.Status = STATUS_NOT_SUPPORTED;
     HubDeviceExtension->PendingSCEIrp->IoStatus.Information = 0;
@@ -502,7 +501,7 @@ QueryStatusChangeEndpoint(
     // Get the Next Stack Location and Initialize it
     //
     Stack = IoGetNextIrpStackLocation(HubDeviceExtension->PendingSCEIrp);
-    Stack->DeviceObject = DeviceObject;
+    Stack->DeviceObject = DeviceObject;//多此一举，似乎没有必要
     Stack->Parameters.Others.Argument1 = PendingSCEUrb;
     Stack->Parameters.Others.Argument2 = NULL;
     Stack->MajorFunction =  IRP_MJ_INTERNAL_DEVICE_CONTROL;
@@ -522,8 +521,8 @@ QueryStatusChangeEndpoint(
     // Send to RootHub
     //
     DPRINT("DeviceObject is %x\n", DeviceObject);
-    DPRINT("Iocalldriver %x with irp %x\n", RootHubDeviceObject, HubDeviceExtension->PendingSCEIrp);
-    IoCallDriver(RootHubDeviceObject, HubDeviceExtension->PendingSCEIrp);
+    DPRINT("Iocalldriver %x with irp %x\n", RootHubPhysicalDeviceObject, HubDeviceExtension->PendingSCEIrp);
+    IoCallDriver(RootHubPhysicalDeviceObject, HubDeviceExtension->PendingSCEIrp);
 
     return STATUS_PENDING;
 }
@@ -551,13 +550,12 @@ QueryInterface(
     // Build Control Request
     //
     Irp = IoBuildSynchronousFsdRequest(IRP_MJ_PNP,
-                                       DeviceObject,
+                                       DeviceObject,//target
                                        NULL,
                                        0,
                                        NULL,
                                        &Event,
-                                       &IoStatus);
-
+                                       &IoStatus);//没有用到
     //
     // Get Next Stack Location and Initialize it.
     //
@@ -601,7 +599,7 @@ GetUsbDeviceDescriptor(
     //
     ChildDeviceExtension = (PHUB_CHILDDEVICE_EXTENSION)ChildDeviceObject->DeviceExtension;
     HubDeviceExtension = (PHUB_DEVICE_EXTENSION) ChildDeviceExtension->ParentDeviceObject->DeviceExtension;
-    RootHubDeviceObject = HubDeviceExtension->RootHubPhysicalDeviceObject;
+    RootHubPhysicalDeviceObject = HubDeviceExtension->RootHubPhysicalDeviceObject;
 
     //
     // Allocate a URB
@@ -639,7 +637,7 @@ GetUsbDeviceDescriptor(
     //
     // Query the Root Hub
     //
-    Status = SubmitRequestToRootHub(RootHubDeviceObject,
+    Status = SubmitRequestToRootHub(RootHubPhysicalDeviceObject,
                                     IOCTL_INTERNAL_USB_SUBMIT_URB,
                                     Urb,
                                     NULL);
