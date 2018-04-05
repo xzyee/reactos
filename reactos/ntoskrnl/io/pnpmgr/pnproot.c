@@ -431,6 +431,7 @@ cleanup:
     return Status;
 }
 
+//构造作为PUNICODE_STRING的EntryContext，使其完整正确
 static NTSTATUS NTAPI
 QueryStringCallback(
     IN PWSTR ValueName,
@@ -438,7 +439,7 @@ QueryStringCallback(
     IN PVOID ValueData,
     IN ULONG ValueLength,
     IN PVOID Context,
-    IN PVOID EntryContext)
+    IN PVOID EntryContext) //EntryContext,字符串，对其进行处理，排除错误，看看能否复制，能复制为正常
 {
     PUNICODE_STRING Destination = (PUNICODE_STRING)EntryContext;
     UNICODE_STRING Source;
@@ -456,15 +457,15 @@ QueryStringCallback(
 
     return RtlDuplicateUnicodeString(RTL_DUPLICATE_UNICODE_STRING_NULL_TERMINATE, &Source, Destination);
 }
-
+//构造作为PBUFFER的EntryContext，使其完整正确
 static NTSTATUS NTAPI
 QueryBinaryValueCallback(
     IN PWSTR ValueName,
     IN ULONG ValueType,
-    IN PVOID ValueData,
-    IN ULONG ValueLength,
+    IN PVOID ValueData,//Buffer->Data将等于此值
+    IN ULONG ValueLength,//Buffer->ValueLength将等于此值
     IN PVOID Context,
-    IN PVOID EntryContext)
+    IN PVOID EntryContext) //PBUFFER,使其Data和Length字段完整正确
 {
     PBUFFER Buffer = (PBUFFER)EntryContext;
     PVOID BinaryValue;
@@ -476,8 +477,7 @@ QueryBinaryValueCallback(
     }
 
     BinaryValue = ExAllocatePoolWithTag(PagedPool, ValueLength, TAG_PNP_ROOT);
-    if (BinaryValue == NULL)
-        return STATUS_NO_MEMORY;
+...
     RtlCopyMemory(BinaryValue, ValueData, ValueLength);
     *Buffer->Data = BinaryValue;
     if (Buffer->Length) *Buffer->Length = ValueLength;
@@ -492,6 +492,7 @@ EnumerateDevices(
     PKEY_BASIC_INFORMATION KeyInfo = NULL, SubKeyInfo = NULL;
     UNICODE_STRING LegacyU = RTL_CONSTANT_STRING(L"LEGACY_");
     UNICODE_STRING KeyName = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\" REGSTR_PATH_SYSTEMENUM L"\\" REGSTR_KEY_ROOTENUM);
+    //                                             \\Registry\\Machine\\System\\CurrentControlSet\\Enum\\Root
     UNICODE_STRING SubKeyName;
     WCHAR DevicePath[MAX_PATH + 1];
     RTL_QUERY_REGISTRY_TABLE QueryTable[4];
@@ -1287,7 +1288,7 @@ NTSTATUS
 NTAPI
 PnpRootAddDevice(
     IN PDRIVER_OBJECT DriverObject,
-    IN PDEVICE_OBJECT PhysicalDeviceObject)
+    IN PDEVICE_OBJECT PhysicalDeviceObject/*必须存在，否则报错*/)
 {
     PPNPROOT_FDO_DEVICE_EXTENSION DeviceExtension;
     NTSTATUS Status;
@@ -1303,17 +1304,13 @@ PnpRootAddDevice(
 
     Status = IoCreateDevice(
         DriverObject,
-        sizeof(PNPROOT_FDO_DEVICE_EXTENSION),
+        sizeof(PNPROOT_FDO_DEVICE_EXTENSION),//注意是PNPROOT_FDO_DEVICE_EXTENSION结构，就是我们正在创建FDO
         NULL,
         FILE_DEVICE_BUS_EXTENDER,
         FILE_DEVICE_SECURE_OPEN,
         TRUE,
-        &PnpRootDeviceObject);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT("IoCreateDevice() failed with status 0x%08lx\n", Status);
-        KeBugCheckEx(PHASE1_INITIALIZATION_FAILED, Status, 0, 0, 0);
-    }
+        &PnpRootDeviceObject);//全局唯一静态指针：static PDEVICE_OBJECT PnpRootDeviceObject = NULL;
+...
     DPRINT("Created FDO %p\n", PnpRootDeviceObject);
 
     DeviceExtension = (PPNPROOT_FDO_DEVICE_EXTENSION)PnpRootDeviceObject->DeviceExtension;
@@ -1326,14 +1323,10 @@ PnpRootAddDevice(
     KeInitializeGuardedMutex(&DeviceExtension->DeviceListLock);
 
     Status = IoAttachDeviceToDeviceStackSafe(
-        PnpRootDeviceObject,
-        PhysicalDeviceObject,
-        &DeviceExtension->Ldo);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT("IoAttachDeviceToDeviceStackSafe() failed with status 0x%08lx\n", Status);
-        KeBugCheckEx(PHASE1_INITIALIZATION_FAILED, Status, 0, 0, 0);
-    }
+        PnpRootDeviceObject,//上面刚刚创建的
+        PhysicalDeviceObject,//必须存在
+        &DeviceExtension->Ldo);//问题：DeviceExtension->Ldo难道不是PnpRootDeviceObject？
+...
 
     PnpRootDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
