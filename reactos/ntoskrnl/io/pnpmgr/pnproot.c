@@ -79,7 +79,7 @@ typedef struct _PNPROOT_FDO_DEVICE_EXTENSION
     KGUARDED_MUTEX DeviceListLock;
 } PNPROOT_FDO_DEVICE_EXTENSION, *PPNPROOT_FDO_DEVICE_EXTENSION;
 
-typedef struct _BUFFER
+typedef struct _BUFFER //从注册表读取数据以后的辅助结构
 {
     PVOID *Data;
     PULONG Length;
