@@ -209,48 +209,45 @@ PnpRootCreateDevice(
 
     _snwprintf(DevicePath, sizeof(DevicePath) / sizeof(WCHAR), L"%s\\%wZ", REGSTR_KEY_ROOTENUM, ServiceName);//DevicePath="Root\ServiceName"
 
-    /* Initialize a PNPROOT_DEVICE structure */
+    /* 创建PNPROOT_DEVICE结构，只有其DeviceID被确定为"Root\ServiceName"*/
     Device = ExAllocatePoolWithTag(PagedPool, sizeof(PNPROOT_DEVICE), TAG_PNP_ROOT);
 ...
     RtlZeroMemory(Device, sizeof(PNPROOT_DEVICE));
+    RtlCreateUnicodeString(&Device->DeviceID, DevicePath);//"Root\ServiceName"
 ...
 
     Status = IopOpenRegistryKeyEx(&EnumHandle/*输出*/, NULL, &EnumKeyName, KEY_READ);
     //                                                             |
     //                                                       "System\\CurrentControlSet\\Enum"
-    if (NT_SUCCESS(Status))
-    {
-        InitializeObjectAttributes(&ObjectAttributes,
-                                   &Device->DeviceID,
+    
+... 
+    //创建DeviceKeyHandle，在System\\CurrentControlSet\\Enum下，比如
+    // System\\CurrentControlSet\\Enum\\root\\ServiceName
+        InitializeObjectAttributes(&ObjectAttributes,/*输出*/
+                                   &Device->DeviceID,//"Root\ServiceName"
                                    OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
-                                   EnumHandle,
+                                   EnumHandle,//RootDirectory
                                    NULL);
-        Status = ZwCreateKey(&DeviceKeyHandle, KEY_SET_VALUE, &ObjectAttributes, 0, NULL, REG_OPTION_VOLATILE, NULL);
-        ObCloseHandle(EnumHandle, KernelMode);
-    }
-
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("Failed to open registry key\n");
-        goto cleanup;
-    }
-
+        Status = ZwCreateKey(&DeviceKeyHandle/*输出*/, KEY_SET_VALUE, &ObjectAttributes, 0, NULL, REG_OPTION_VOLATILE, NULL);
+        ObCloseHandle(EnumHandle, KernelMode);//不再需要
+ 
+...
 tryagain:
     RtlZeroMemory(QueryTable, sizeof(QueryTable));
     QueryTable[0].Name = L"NextInstance";
-    QueryTable[0].EntryContext = &NextInstance;
+    QueryTable[0].EntryContext = &NextInstance;//查询参数将在此保存
     QueryTable[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_REQUIRED;
 
-    Status = RtlQueryRegistryValues(RTL_REGISTRY_HANDLE,
-                                    (PWSTR)DeviceKeyHandle,
+    Status = RtlQueryRegistryValues(RTL_REGISTRY_HANDLE, //path参数实际上是一个句柄
+                                    (PWSTR)DeviceKeyHandle, //path
                                     QueryTable,
-                                    NULL,
-                                    NULL);
+                                    NULL,//Context
+                                    NULL); //Environment
     if (!NT_SUCCESS(Status))
     {
         for (NextInstance = 0; NextInstance <= 9999; NextInstance++)
         {
-             _snwprintf(InstancePath, sizeof(InstancePath) / sizeof(WCHAR), L"%04lu", NextInstance);
+             _snwprintf(InstancePath, sizeof(InstancePath) / sizeof(WCHAR), L"%04lu", NextInstance);//0000~9999?
              Status = LocateChildDevice(DeviceExtension, DevicePath, InstancePath, &Device);
              if (Status == STATUS_NO_SUCH_DEVICE)
                  break;
@@ -264,8 +261,9 @@ tryagain:
         }
     }
 
+    //NextInstance和InstancePath总是4位数字
     _snwprintf(InstancePath, sizeof(InstancePath) / sizeof(WCHAR), L"%04lu", NextInstance);
-    Status = LocateChildDevice(DeviceExtension, DevicePath, InstancePath, &Device);
+    Status = LocateChildDevice(DeviceExtension, DevicePath/*"Root\ServiceName"*/, InstancePath/*0000?*/, &Device);
     if (Status != STATUS_NO_SUCH_DEVICE || NextInstance > 9999)
     {
         DPRINT1("NextInstance value is corrupt! (%lu)\n", NextInstance);
@@ -277,7 +275,7 @@ tryagain:
 
     NextInstance++;
     Status = RtlWriteRegistryValue(RTL_REGISTRY_HANDLE,
-                                   (PWSTR)DeviceKeyHandle,
+                                   (PWSTR)DeviceKeyHandle,//"Root\ServiceName"
                                    L"NextInstance",
                                    REG_DWORD,
                                    &NextInstance,
@@ -288,11 +286,8 @@ tryagain:
         goto cleanup;
     }
 
-    if (!RtlCreateUnicodeString(&Device->InstanceID, InstancePath))
-    {
-        Status = STATUS_NO_MEMORY;
-        goto cleanup;
-    }
+    RtlCreateUnicodeString(&Device->InstanceID, InstancePath);
+ 
 
     /* Finish creating the instance path in the registry */
     InitializeObjectAttributes(&ObjectAttributes,
