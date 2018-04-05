@@ -197,7 +197,7 @@ PnpRootCreateDevice(
     NTSTATUS Status;
     UNICODE_STRING PathSep = RTL_CONSTANT_STRING(L"\\");
     ULONG NextInstance;
-    UNICODE_STRING EnumKeyName = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\" REGSTR_PATH_SYSTEMENUM);
+    UNICODE_STRING EnumKeyName = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\" REGSTR_PATH_SYSTEMENUM);//"System\\CurrentControlSet\\Enum"
     HANDLE EnumHandle, DeviceKeyHandle = INVALID_HANDLE_VALUE, InstanceKeyHandle;
     RTL_QUERY_REGISTRY_TABLE QueryTable[2];
     OBJECT_ATTRIBUTES ObjectAttributes;
