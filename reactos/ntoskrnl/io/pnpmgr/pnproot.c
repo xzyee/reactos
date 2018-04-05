@@ -125,14 +125,36 @@ LocateChildDevice(
     /* No device found */
     return STATUS_NO_SUCH_DEVICE;
 }
+/* 
+(1)创建一个PNPROOT_DEVICE结构,并适当初始化
+typedef struct _PNPROOT_DEVICE
+{
+    LIST_ENTRY ListEntry; //腰带
+ 
+    PDEVICE_OBJECT Pdo; //输入参数DeviceObject
+
+    UNICODE_STRING DeviceID; 比如"ROOT\LEGACY_VMBUS"
+
+    UNICODE_STRING InstanceID; 比如"0000"
+    //以下未被初始化
+    UNICODE_STRING DeviceDescription;
+    PIO_RESOURCE_REQUIREMENTS_LIST ResourceRequirementsList;
+    PCM_RESOURCE_LIST ResourceList;
+    ULONG ResourceListSize;
+} PNPROOT_DEVICE, *PPNPROOT_DEVICE;
+ 
+(2)然后挂到PnpRootDeviceObject->DeviceExtension的串串上
+注意以DeviceNode为纽带，DeviceObject->DeviceNode->InstancePath->设备ID和实例ID
+*/
 
 NTSTATUS
 PnpRootRegisterDevice(
-    IN PDEVICE_OBJECT DeviceObject)
+    IN PDEVICE_OBJECT DeviceObject //PDO
+    )
 {
     PPNPROOT_FDO_DEVICE_EXTENSION DeviceExtension = PnpRootDeviceObject->DeviceExtension;
     PPNPROOT_DEVICE Device;
-    PDEVICE_NODE DeviceNode;
+    PDEVICE_NODE DeviceNode;//从中找到InstancePath信息
     PWSTR InstancePath;
     UNICODE_STRING InstancePathCopy;
 
@@ -146,6 +168,7 @@ PnpRootRegisterDevice(
         return STATUS_NO_MEMORY;
     }
 
+    //InstancePath = "$DeviceID\$InstanceID"
     InstancePath = wcsrchr(InstancePathCopy.Buffer, L'\\');
     ASSERT(InstancePath);
 
@@ -156,8 +179,7 @@ PnpRootRegisterDevice(
         return STATUS_NO_MEMORY;
     }
 
-    InstancePath[0] = UNICODE_NULL;
-
+    InstancePath[0] = UNICODE_NULL; //相当于去掉InstanceID部分，只保留DeviceID部分
     if (!RtlCreateUnicodeString(&Device->DeviceID, InstancePathCopy.Buffer))
     {
         RtlFreeUnicodeString(&InstancePathCopy);
@@ -166,10 +188,11 @@ PnpRootRegisterDevice(
         return STATUS_NO_MEMORY;
     }
 
-    InstancePath[0] = L'\\';
-
+    InstancePath[0] = L'\\';//还原
+ 
     Device->Pdo = DeviceObject;
 
+    //串在全局唯一FDO的设备扩展（PNPROOT_FDO_DEVICE_EXTENSION）里的那个串串上
     KeAcquireGuardedMutex(&DeviceExtension->DeviceListLock);
     InsertTailList(&DeviceExtension->DeviceListHead,
                    &Device->ListEntry);
@@ -181,7 +204,17 @@ PnpRootRegisterDevice(
     return STATUS_SUCCESS;
 }
 
-/* Creates a new PnP device for a legacy driver */
+/* Creates a new PnP device for a legacy driver 
+(1)在\\Registry\\Machine\\System\\CurrentControlSet\\Enum下面创建root\ServiceName\0000
+(2)创建PNPROOT_DEVICE结构，被串在静态指针PnpRootDeviceObject的设备扩展PNPROOT_FDO_DEVICE_EXTENSION上
+(3)创建pdo，其设备扩展为PNPROOT_PDO_DEVICE_EXTENSION
+对上面(2)(3)的理解：PnpRootDeviceObject为FDO，全局只有一个，而创建的pdo为PDO，并且有很多，被串联起来，这就容易理解了
+DevicePath = "ROOT\LEGAY_VMBUS"
+DeviceID = "Root\ServiceName"
+FullInstancePath ="ROOT\LEGAY_VMBUS\0000"
+pPNPROOTDevice->DeviceID = "Root\ServiceName"
+pPNPROOTDevice->InstanceID = "0000"
+*/
 NTSTATUS
 PnpRootCreateDevice(
     IN PUNICODE_STRING ServiceName,//比如："LEGAY_VMBUS"
