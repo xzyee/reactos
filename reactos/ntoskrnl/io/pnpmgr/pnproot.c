@@ -483,7 +483,13 @@ QueryBinaryValueCallback(
     if (Buffer->Length) *Buffer->Length = ValueLength;
     return STATUS_SUCCESS;
 }
-
+ 
+/*
+搜索注册表 \\Registry\\Machine\\System\\CurrentControlSet\\Enum\\Root下的设备
+如果为传统设备，忽略之
+如果为pnp设备，那么把Instance比如0000所代表的实例要创建一个PNPROOT_DEVICE，
+其中全部参数都来自于读取的注册表信息，并且PNPROOT_DEVICE加入到串串中
+*/
 static NTSTATUS
 EnumerateDevices(
     IN PDEVICE_OBJECT DeviceObject)
@@ -516,15 +522,19 @@ EnumerateDevices(
 ...
     SubKeyInfo = ExAllocatePoolWithTag(PagedPool, BufferSize, TAG_PNP_ROOT);
 ...
+/*
+KeyInfo和SubKeyInfo的结构：
+    typedef struct _KEY_BASIC_INFORMATION {
+    LARGE_INTEGER LastWriteTime;
+    ULONG         TitleIndex;
+    ULONG         NameLength;
+    WCHAR         Name[1]; //变长
+} KEY_BASIC_INFORMATION, *PKEY_BASIC_INFORMATION;
+ */   
     
-    
-    Status = IopOpenRegistryKeyEx(&KeyHandle, NULL, &KeyName, KEY_ENUMERATE_SUB_KEYS);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT("IopOpenRegistryKeyEx(%wZ) failed with status 0x%08lx\n", &KeyName, Status);
-        goto cleanup;
-    }
-
+    //打开\\Registry\\Machine\\System\\CurrentControlSet\\Enum\\Root
+    Status = IopOpenRegistryKeyEx(&KeyHandle/*输出*/, NULL, &KeyName, KEY_ENUMERATE_SUB_KEYS);
+...
     /* Devices are sub-sub-keys of 'KeyName'. KeyName is already opened as
      * KeyHandle. We'll first do a first enumeration to have first level keys,
      * and an inner one to have the real devices list.
@@ -535,27 +545,23 @@ EnumerateDevices(
         Status = ZwEnumerateKey(
             KeyHandle,
             Index1,
-            KeyBasicInformation,
-            KeyInfo,
+            KeyBasicInformation,//枚举，KEY_INFORMATION_CLASS
+            KeyInfo,/*输出*/
             BufferSize,
-            &ResultSize);
+            &ResultSize);/*输出*/
         if (Status == STATUS_NO_MORE_ENTRIES)
         {
-            Status = STATUS_SUCCESS;
+            Status = STATUS_SUCCESS; //Root\没有任何东西也是一种可能的
             break;
         }
-        else if (!NT_SUCCESS(Status))
-        {
-            DPRINT("ZwEnumerateKey() failed with status 0x%08lx\n", Status);
-            goto cleanup;
-        }
+...
 
         /* Terminate the string */
         KeyInfo->Name[KeyInfo->NameLength / sizeof(WCHAR)] = 0;
 
         /* Check if it is a legacy driver */
         RtlInitUnicodeString(&SubKeyName, KeyInfo->Name);
-        if (RtlPrefixUnicodeString(&LegacyU, &SubKeyName, FALSE))
+        if (RtlPrefixUnicodeString(&LegacyU, &SubKeyName, FALSE)) //如果"LEGACY_"字样则是legacy driver，将忽略
         {
             DPRINT("Ignoring legacy driver '%wZ'\n", &SubKeyName);
             Index1++;
@@ -564,86 +570,70 @@ EnumerateDevices(
 
         /* Open the key */
         Status = IopOpenRegistryKeyEx(&SubKeyHandle, KeyHandle, &SubKeyName, KEY_ENUMERATE_SUB_KEYS);
-        if (!NT_SUCCESS(Status))
-        {
-            DPRINT("IopOpenRegistryKeyEx() failed with status 0x%08lx\n", Status);
-            break;
-        }
+                                           |
+        //现在SubKeyHandle为Root下面的项，比如"mssmbios","RDP_KBD","RDP_MOU"
+...
 
         /* Enumerate the sub-keys */
         Index2 = 0;
         while (TRUE)
         {
             Status = ZwEnumerateKey(
-                SubKeyHandle,
+                SubKeyHandle,//比如在"mssmbios","RDP_KBD","RDP_MOU"下寻找
                 Index2,
-                KeyBasicInformation,
-                SubKeyInfo,
+                KeyBasicInformation,//枚举，KEY_INFORMATION_CLASS
+                SubKeyInfo,/*输出*/
                 BufferSize,
-                &ResultSize);
+                &ResultSize);/*输出*/
             if (Status == STATUS_NO_MORE_ENTRIES)
                 break;
-            else if (!NT_SUCCESS(Status))
-            {
-                DPRINT("ZwEnumerateKey() failed with status 0x%08lx\n", Status);
-                break;
-            }
-
+...
             /* Terminate the string */
+            //现在SubKeyInfo->Name实际是InstanceId，可能是"RDP_KBD"什么的
             SubKeyInfo->Name[SubKeyInfo->NameLength / sizeof(WCHAR)] = 0;
 
+            //构造DevicePath，比如DevicePath = "Root\RDP_KBD"
             _snwprintf(DevicePath, sizeof(DevicePath) / sizeof(WCHAR),
                        L"%s\\%s", REGSTR_KEY_ROOTENUM, KeyInfo->Name);
             DPRINT("Found device %S\\%s!\n", DevicePath, SubKeyInfo->Name);
             if (LocateChildDevice(DeviceExtension, DevicePath, SubKeyInfo->Name, &Device) == STATUS_NO_SUCH_DEVICE)
+            //                                     DeviceId    InstanceId
             {
                 /* Create a PPNPROOT_DEVICE object, and add if in the list of known devices */
                 Device = (PPNPROOT_DEVICE)ExAllocatePoolWithTag(PagedPool, sizeof(PNPROOT_DEVICE), TAG_PNP_ROOT);
-                if (!Device)
-                {
-                    DPRINT("ExAllocatePoolWithTag() failed\n");
-                    Status = STATUS_NO_MEMORY;
-                    goto cleanup;
-                }
+...
                 RtlZeroMemory(Device, sizeof(PNPROOT_DEVICE));
 
                 /* Fill device ID and instance ID */
                 if (!RtlCreateUnicodeString(&Device->DeviceID, DevicePath))
                 {
-                    DPRINT1("RtlCreateUnicodeString() failed\n");
-                    Status = STATUS_NO_MEMORY;
-                    goto cleanup;
+...
                 }
 
                 if (!RtlCreateUnicodeString(&Device->InstanceID, SubKeyInfo->Name))
                 {
-                    DPRINT1("RtlCreateUnicodeString() failed\n");
-                    Status = STATUS_NO_MEMORY;
-                    goto cleanup;
+...
                 }
 
                 /* Open registry key to fill other informations */
                 Status = IopOpenRegistryKeyEx(&DeviceKeyHandle, SubKeyHandle, &Device->InstanceID, KEY_READ);
-                if (!NT_SUCCESS(Status))
-                {
-                    DPRINT1("IopOpenRegistryKeyEx() failed with status 0x%08lx\n", Status);
-                    break;
-                }
+                //                                                  |相当于          |
+                //                                              Root\RDP_KBD       "0000"
+...
 
                 /* Fill information from the device instance key */
                 RtlZeroMemory(QueryTable, sizeof(QueryTable));
                 QueryTable[0].QueryRoutine = QueryStringCallback;
                 QueryTable[0].Name = L"DeviceDesc";
-                QueryTable[0].EntryContext = &Device->DeviceDescription;
-
+                QueryTable[0].EntryContext = &Device->DeviceDescription;//将保存在此，比如"@machine.inf,%rdp_kbd.devicedesc%;Terminal Server Keyboard Driver"
                 RtlQueryRegistryValues(RTL_REGISTRY_HANDLE,
-                                       (PCWSTR)DeviceKeyHandle,
+                                       (PCWSTR)DeviceKeyHandle,//比如0000的句柄
                                        QueryTable,
                                        NULL,
                                        NULL);
 
                 /* Fill information from the LogConf subkey */
-                Buffer1.Data = (PVOID *)&Device->ResourceRequirementsList;
+                Buffer1.Data = (PVOID *)&Device->ResourceRequirementsList;//原来来自注册表
                 Buffer1.Length = NULL;
                 Buffer2.Data = (PVOID *)&Device->ResourceList;
                 Buffer2.Length = &Device->ResourceListSize;
@@ -658,15 +648,11 @@ EnumerateDevices(
                 QueryTable[2].EntryContext = &Buffer2;
 
                 if (!NT_SUCCESS(RtlQueryRegistryValues(RTL_REGISTRY_HANDLE,
-                                                       (PCWSTR)DeviceKeyHandle,
+                                                       (PCWSTR)DeviceKeyHandle,//比如0000的句柄
                                                        QueryTable,
                                                        NULL,
                                                        NULL)))
-                {
-                    /* Non-fatal error */
-                    DPRINT1("Failed to read the LogConf key for %S\\%S\n", DevicePath, SubKeyInfo->Name);
-                }
-
+...
                 ZwClose(DeviceKeyHandle);
                 DeviceKeyHandle = INVALID_HANDLE_VALUE;
 
