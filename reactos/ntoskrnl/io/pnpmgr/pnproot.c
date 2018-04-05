@@ -184,10 +184,10 @@ PnpRootRegisterDevice(
 /* Creates a new PnP device for a legacy driver */
 NTSTATUS
 PnpRootCreateDevice(
-    IN PUNICODE_STRING ServiceName,
-    IN OPTIONAL PDRIVER_OBJECT DriverObject,
-    OUT PDEVICE_OBJECT *PhysicalDeviceObject,
-    OUT OPTIONAL PUNICODE_STRING FullInstancePath)
+    IN PUNICODE_STRING ServiceName,//比如："LEGAY_VMBUS"
+    IN OPTIONAL PDRIVER_OBJECT DriverObject,//如果为NULL，则用PnpRootDeviceObject->DriverObject代替
+    OUT PDEVICE_OBJECT *PhysicalDeviceObject,//输出
+    OUT OPTIONAL PUNICODE_STRING FullInstancePath)//输出，比如："ROOT\LEGAY_VMBUS\0000"
 {
     PPNPROOT_FDO_DEVICE_EXTENSION DeviceExtension;
     PPNPROOT_PDO_DEVICE_EXTENSION PdoDeviceExtension;
@@ -197,12 +197,19 @@ PnpRootCreateDevice(
     NTSTATUS Status;
     UNICODE_STRING PathSep = RTL_CONSTANT_STRING(L"\\");
     ULONG NextInstance;
-    UNICODE_STRING EnumKeyName = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\" REGSTR_PATH_SYSTEMENUM);//"System\\CurrentControlSet\\Enum"
+    UNICODE_STRING EnumKeyName = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\" REGSTR_PATH_SYSTEMENUM);
+    //                                                                                   |
+    //                                                                      "System\\CurrentControlSet\\Enum"
+    //
+    //EnumKeyName = L"\\Registry\\Machine\\System\\CurrentControlSet\\Enum"
+    
     HANDLE EnumHandle, DeviceKeyHandle = INVALID_HANDLE_VALUE, InstanceKeyHandle;
     RTL_QUERY_REGISTRY_TABLE QueryTable[2];
     OBJECT_ATTRIBUTES ObjectAttributes;
 
     DeviceExtension = PnpRootDeviceObject->DeviceExtension;
+    //                           |
+    //                 静态PDEVICE_OBJECT指针
     KeAcquireGuardedMutex(&DeviceExtension->DeviceListLock);
 
     DPRINT("Creating a PnP root device for service '%wZ'\n", ServiceName);
@@ -218,11 +225,11 @@ PnpRootCreateDevice(
 
     Status = IopOpenRegistryKeyEx(&EnumHandle/*输出*/, NULL, &EnumKeyName, KEY_READ);
     //                                                             |
-    //                                                       "System\\CurrentControlSet\\Enum"
+    //                                      "\\Registry\\Machine\\System\\CurrentControlSet\\Enum"
     
 ... 
-    //创建DeviceKeyHandle，在System\\CurrentControlSet\\Enum下，比如
-    // System\\CurrentControlSet\\Enum\\root\\ServiceName
+    //创建DeviceKeyHandle，在Registry\Machine\System\\CurrentControlSet\\Enum下，比如
+    // HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Enum\Root\LEGACY_NDIS
         InitializeObjectAttributes(&ObjectAttributes,/*输出*/
                                    &Device->DeviceID,//"Root\ServiceName"
                                    OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
@@ -230,7 +237,12 @@ PnpRootCreateDevice(
                                    NULL);
         Status = ZwCreateKey(&DeviceKeyHandle/*输出*/, KEY_SET_VALUE, &ObjectAttributes, 0, NULL, REG_OPTION_VOLATILE, NULL);
         ObCloseHandle(EnumHandle, KernelMode);//不再需要
- 
+ /*综上所述：
+    EnumKeyName =  "\Registry\Machine\System\CurrentControlSet\Enum",其句柄为EnumHandle
+    DeviceID = "Root\ServiceName"
+    DeviceKeyHandle为\Registry\Machine\System\CurrentControlSet\Enum\Root\ServiceName的句柄 
+    打开目录（EnumKeyName），创建key（Root\ServiceName）
+  */
 ...
 tryagain:
     RtlZeroMemory(QueryTable, sizeof(QueryTable));
@@ -243,13 +255,13 @@ tryagain:
                                     QueryTable,
                                     NULL,//Context
                                     NULL); //Environment
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status)) //处理如果没有NextInstance值的情况，正常会有NextInstance的
     {
         for (NextInstance = 0; NextInstance <= 9999; NextInstance++)
         {
              _snwprintf(InstancePath, sizeof(InstancePath) / sizeof(WCHAR), L"%04lu", NextInstance);//0000~9999?
-             Status = LocateChildDevice(DeviceExtension, DevicePath, InstancePath, &Device);
-             if (Status == STATUS_NO_SUCH_DEVICE)
+             Status = LocateChildDevice(DeviceExtension, DevicePath, InstancePath, &Device/*输出*/);
+             if (Status == STATUS_NO_SUCH_DEVICE) //找到一个没用的跳出
                  break;
         }
 
@@ -260,10 +272,14 @@ tryagain:
             goto cleanup;
         }
     }
-
-    //NextInstance和InstancePath总是4位数字
+    
+    //现在有了NextInstance将转换为InstancePath
+    //NextInstance和InstancePath总是4字节无符号长整数
+    //InstancePath居然是个数字字符串，比如"0001"
     _snwprintf(InstancePath, sizeof(InstancePath) / sizeof(WCHAR), L"%04lu", NextInstance);
-    Status = LocateChildDevice(DeviceExtension, DevicePath/*"Root\ServiceName"*/, InstancePath/*0000?*/, &Device);
+    Status = LocateChildDevice(DeviceExtension, DevicePath/*"Root\ServiceName"*/, InstancePath/*"0001"~"9999"*/, &Device);
+    
+    //InstancePath所指的设备肯定不在 PnpRootDeviceObject->DeviceExtension表上，因为还没有创建。如果找到肯定出错了
     if (Status != STATUS_NO_SUCH_DEVICE || NextInstance > 9999)
     {
         DPRINT1("NextInstance value is corrupt! (%lu)\n", NextInstance);
@@ -273,6 +289,7 @@ tryagain:
         goto tryagain;
     }
 
+    //更新一下注册表中的NextInstance值的data
     NextInstance++;
     Status = RtlWriteRegistryValue(RTL_REGISTRY_HANDLE,
                                    (PWSTR)DeviceKeyHandle,//"Root\ServiceName"
@@ -280,15 +297,17 @@ tryagain:
                                    REG_DWORD,
                                    &NextInstance,
                                    sizeof(NextInstance));
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("Failed to write new NextInstance value! (0x%x)\n", Status);
-        goto cleanup;
-    }
-
+...
     RtlCreateUnicodeString(&Device->InstanceID, InstancePath);
+    //                          比如"0000"
  
-
+    /*下面生成一个键，其层次为：
+    \Registry\Machine\System\CurrentControlSet\Enum
+    \Root\ServiceName
+    \0000  
+    这意味着，如果注册表中没有\0000类似的东西，就没有实际那个硬件存在？
+    */
+    
     /* Finish creating the instance path in the registry */
     InitializeObjectAttributes(&ObjectAttributes,
                                &Device->InstanceID,
@@ -296,12 +315,7 @@ tryagain:
                                DeviceKeyHandle,
                                NULL);
     Status = ZwCreateKey(&InstanceKeyHandle, KEY_QUERY_VALUE, &ObjectAttributes, 0, NULL, REG_OPTION_VOLATILE, NULL);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("Failed to create instance path (0x%x)\n", Status);
-        goto cleanup;
-    }
-
+...
     /* Just close the handle */
     ObCloseHandle(InstanceKeyHandle, KernelMode);
 
@@ -310,41 +324,53 @@ tryagain:
         FullInstancePath->MaximumLength = Device->DeviceID.Length + PathSep.Length + Device->InstanceID.Length;
         FullInstancePath->Length = 0;
         FullInstancePath->Buffer = ExAllocatePool(PagedPool, FullInstancePath->MaximumLength);
-        if (!FullInstancePath->Buffer)
-        {
-            Status = STATUS_NO_MEMORY;
-            goto cleanup;
-        }
-
+...
+        //FullInstancePath示:"\Root\ServiceName\0000"
         RtlAppendUnicodeStringToString(FullInstancePath, &Device->DeviceID);
         RtlAppendUnicodeStringToString(FullInstancePath, &PathSep);
         RtlAppendUnicodeStringToString(FullInstancePath, &Device->InstanceID);
     }
 
-    /* Initialize a device object */
+    /* !!! Initialize a device object !!!*/
     Status = IoCreateDevice(
         DriverObject ? DriverObject : PnpRootDeviceObject->DriverObject,
         sizeof(PNPROOT_PDO_DEVICE_EXTENSION),
         NULL,
-        FILE_DEVICE_CONTROLLER,
+        FILE_DEVICE_CONTROLLER,//控制器？
         FILE_AUTOGENERATED_DEVICE_NAME,
         FALSE,
         &Device->Pdo);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT("IoCreateDevice() failed with status 0x%08lx\n", Status);
-        Status = STATUS_NO_MEMORY;
-        goto cleanup;
-    }
-
+...
     PdoDeviceExtension = (PPNPROOT_PDO_DEVICE_EXTENSION)Device->Pdo->DeviceExtension;
     RtlZeroMemory(PdoDeviceExtension, sizeof(PNPROOT_PDO_DEVICE_EXTENSION));
     PdoDeviceExtension->Common.IsFDO = FALSE;
-    PdoDeviceExtension->DeviceInfo = Device;
+    PdoDeviceExtension->DeviceInfo = Device; //PNPROOT_DEVICE结构
+/* 
+    typedef struct _PNPROOT_DEVICE
+{
 
-    Device->Pdo->Flags |= DO_BUS_ENUMERATED_DEVICE;
+    LIST_ENTRY ListEntry; //凡是"ROOT\XXX"的PNPROOT_DEVICE设备都穿在一起
+ 
+    PDEVICE_OBJECT Pdo;//刚刚创建的设备对象结构，其扩展为PNPROOT_PDO_DEVICE_EXTENSION
+
+    UNICODE_STRING DeviceID; 比如"ROOT\LEGACY_VMBUS"
+
+    UNICODE_STRING InstanceID; 比如"0000"
+
+    UNICODE_STRING DeviceDescription;当前为"\0"
+
+    PIO_RESOURCE_REQUIREMENTS_LIST ResourceRequirementsList; 当前为NULL
+    PCM_RESOURCE_LIST ResourceList;当前为NULL
+    ULONG ResourceListSize;当前为0
+} PNPROOT_DEVICE, *PPNPROOT_DEVICE;
+*/
+    
+    
+    Device->Pdo->Flags |= DO_BUS_ENUMERATED_DEVICE;//ROOT的东西也算是一种BUS
     Device->Pdo->Flags &= ~DO_DEVICE_INITIALIZING;
 
+    //串在静态指针PnpRootDeviceObject的设备扩展PNPROOT_FDO_DEVICE_EXTENSION上
+    //注意PnpRootDeviceObject也是一个标准的PDEVICE_OBJECT
     InsertTailList(
         &DeviceExtension->DeviceListHead,
         &Device->ListEntry);
