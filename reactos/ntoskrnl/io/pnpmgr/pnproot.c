@@ -513,20 +513,11 @@ EnumerateDevices(
 
     BufferSize = sizeof(KEY_BASIC_INFORMATION) + (MAX_PATH + 1) * sizeof(WCHAR);
     KeyInfo = ExAllocatePoolWithTag(PagedPool, BufferSize, TAG_PNP_ROOT);
-    if (!KeyInfo)
-    {
-        DPRINT("ExAllocatePoolWithTag() failed\n");
-        Status = STATUS_NO_MEMORY;
-        goto cleanup;
-    }
+...
     SubKeyInfo = ExAllocatePoolWithTag(PagedPool, BufferSize, TAG_PNP_ROOT);
-    if (!SubKeyInfo)
-    {
-        DPRINT("ExAllocatePoolWithTag() failed\n");
-        Status = STATUS_NO_MEMORY;
-        goto cleanup;
-    }
-
+...
+    
+    
     Status = IopOpenRegistryKeyEx(&KeyHandle, NULL, &KeyName, KEY_ENUMERATE_SUB_KEYS);
     if (!NT_SUCCESS(Status))
     {
@@ -1174,7 +1165,7 @@ PnpRootPdoPnpControl(
   {
     case IRP_MN_START_DEVICE: /* 0x00 */
       DPRINT("IRP_MJ_PNP / IRP_MN_START_DEVICE\n");
-      Status = STATUS_SUCCESS;
+      Status = STATUS_SUCCESS;//不需要做什么
       break;
 
     case IRP_MN_QUERY_DEVICE_RELATIONS: /* 0x07 */
@@ -1283,7 +1274,8 @@ PnpRootPnpControl(
 
     return Status;
 }
-
+ 
+//创建全局唯一静态变量(FDO)：PnpRootDeviceObject
 NTSTATUS
 NTAPI
 PnpRootAddDevice(
