@@ -207,24 +207,17 @@ PnpRootCreateDevice(
 
     DPRINT("Creating a PnP root device for service '%wZ'\n", ServiceName);
 
-    _snwprintf(DevicePath, sizeof(DevicePath) / sizeof(WCHAR), L"%s\\%wZ", REGSTR_KEY_ROOTENUM, ServiceName);
+    _snwprintf(DevicePath, sizeof(DevicePath) / sizeof(WCHAR), L"%s\\%wZ", REGSTR_KEY_ROOTENUM, ServiceName);//DevicePath="Root\ServiceName"
 
     /* Initialize a PNPROOT_DEVICE structure */
     Device = ExAllocatePoolWithTag(PagedPool, sizeof(PNPROOT_DEVICE), TAG_PNP_ROOT);
-    if (!Device)
-    {
-        DPRINT("ExAllocatePoolWithTag() failed\n");
-        Status = STATUS_NO_MEMORY;
-        goto cleanup;
-    }
+...
     RtlZeroMemory(Device, sizeof(PNPROOT_DEVICE));
-    if (!RtlCreateUnicodeString(&Device->DeviceID, DevicePath))
-    {
-        Status = STATUS_NO_MEMORY;
-        goto cleanup;
-    }
+...
 
-    Status = IopOpenRegistryKeyEx(&EnumHandle, NULL, &EnumKeyName, KEY_READ);
+    Status = IopOpenRegistryKeyEx(&EnumHandle/*输出*/, NULL, &EnumKeyName, KEY_READ);
+    //                                                             |
+    //                                                       "System\\CurrentControlSet\\Enum"
     if (NT_SUCCESS(Status))
     {
         InitializeObjectAttributes(&ObjectAttributes,
