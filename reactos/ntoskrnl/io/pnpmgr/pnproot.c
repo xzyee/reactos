@@ -89,6 +89,8 @@ static PDEVICE_OBJECT PnpRootDeviceObject = NULL;
 
 /* FUNCTIONS *****************************************************************/
 
+//在PnpRootDeviceObject->DeviceExtension的串串上找PNPROOT_DEVICE，
+//注意PNPROOT_DEVICE不是DEVICE_OBJECT，两者两码事
 static NTSTATUS
 LocateChildDevice(
     IN PPNPROOT_FDO_DEVICE_EXTENSION DeviceExtension,
