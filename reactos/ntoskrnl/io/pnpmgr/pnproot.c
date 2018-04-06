@@ -16,7 +16,12 @@
 /* GLOBALS *******************************************************************/
 
 #define ENUM_NAME_ROOT L"Root"
-
+//这是一个驱动！只不过不支持什么读写罢了
+//PnpRootDriver:PnP manager root device
+//把root当成一个硬件bus设备，这个设备能产生很多pdo，比如root\xxx\000,root\yyy\000...
+//既然是硬件bus设备，那么本驱动就是理所当然的，通过AddDevice创建全局唯一的fdo，在响应
+//IRP_MN_QUERY_DEVICE_RELATIONS时然后通过读取注册表的方式进行枚举（没有更好的其他方法了），
+//并创建pdo，创建的pdo的设备扩展的主要内容是PPNPROOT_DEVICE DeviceInfo；只是一些信息
 /* DATA **********************************************************************/
 
 typedef struct _PNPROOT_DEVICE
@@ -1109,7 +1114,7 @@ PdoQueryBusInformation(
     {
         RtlCopyMemory(
             &BusInfo->BusTypeGuid,
-            &GUID_BUS_TYPE_INTERNAL,
+            &GUID_BUS_TYPE_INTERNAL, //特别
             sizeof(BusInfo->BusTypeGuid));
         BusInfo->LegacyBusType = PNPBus;
         /* We're the only root bus enumerator on the computer */
