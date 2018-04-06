@@ -4,7 +4,7 @@
  * FILE:            ntoskrnl/io/pnpmgr/pnpmgr.c
  * PURPOSE:         Initializes the PnP manager
  * PROGRAMMERS:     Casper S. Hornstrup (chorns@users.sourceforge.net)
- *                  Copyright 2007 Herv� Poussineau (hpoussin@reactos.org)
+ *                  Copyright 2007 Hervé Poussineau (hpoussin@reactos.org)
  */
 
 /* INCLUDES ******************************************************************/
@@ -72,6 +72,11 @@ IopFixupDeviceId(PWCHAR String)
     }
 }
 
+//根据HardwareId和CompatibleId，
+//把HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\CriticalDeviceDatabase下
+//HardwareId和CompatibleId下的Service和ClassGUID写入到ENUM中
+//HardwareId和CompatibleId来自于DeviceNode，具体说来就是打开注册表：DeviceNode->InstancePath，也就是ENUM
+//总的说来，就是针对某个具体设备，运用CriticalDeviceDatabase下的信息（Service和ClassGUID）充实ENUM下的信息
 VOID
 NTAPI
 IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
@@ -80,6 +85,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
     HANDLE CriticalDeviceKey, InstanceKey;
     OBJECT_ATTRIBUTES ObjectAttributes;
     UNICODE_STRING CriticalDeviceKeyU = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\CriticalDeviceDatabase");
+    //                                                         HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\CriticalDeviceDatabase
     UNICODE_STRING CompatibleIdU = RTL_CONSTANT_STRING(L"CompatibleIDs");
     UNICODE_STRING HardwareIdU = RTL_CONSTANT_STRING(L"HardwareID");
     UNICODE_STRING ServiceU = RTL_CONSTANT_STRING(L"Service");
@@ -89,23 +95,17 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
     PWCHAR IdBuffer, OriginalIdBuffer;
     
     /* Open the device instance key */
-    Status = IopCreateDeviceKeyPath(&DeviceNode->InstancePath, 0, &InstanceKey);
-    if (Status != STATUS_SUCCESS)
-        return;
-
-    Status = ZwQueryValueKey(InstanceKey,
+    Status = IopCreateDeviceKeyPath(&DeviceNode->InstancePath, 0, &InstanceKey/*输出*/);
+...
+    Status = ZwQueryValueKey(InstanceKey,//等同于DeviceNode->InstancePath
                              &HardwareIdU,
                              KeyValuePartialInformation,
                              NULL,
                              0,
                              &HidLength);
-    if (Status != STATUS_BUFFER_OVERFLOW && Status != STATUS_BUFFER_TOO_SMALL)
-    {
-        ZwClose(InstanceKey);
-        return;
-    }
+...
 
-    Status = ZwQueryValueKey(InstanceKey,
+    Status = ZwQueryValueKey(InstanceKey,//等同于DeviceNode->InstancePath
                              &CompatibleIdU,
                              KeyValuePartialInformation,
                              NULL,
@@ -116,57 +116,56 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
         CidLength = 0;
     }
 
-    BufferLength = HidLength + CidLength;
-    BufferLength -= (((CidLength != 0) ? 2 : 1) * FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data));
+    BufferLength = HidLength + CidLength; //总长度（硬件id和兼容id），注意两者都是以KEY_VALUE_PARTIAL_INFORMATION结构
+    BufferLength -= (((CidLength != 0) ? 2 : 1) * FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data));//净长度
+    /*
+KEY_VALUE_PARTIAL_INFORMATION的构成，注意是变长结构，所以下面要比较大小取最长的
+= ============================
+TitleIndex 
+Device and intermediate drivers should ignore this member.
+
+Type 
+Specifies the system-defined type for the registry value in the Data member. For a summary of these types, see KEY_VALUE_BASIC_INFORMATION.
+
+DataLength 
+The size in bytes of the Data member.
+
+Data 
+A value entry of the key.
+*/
+    
 
     /* Allocate a buffer to hold data from both */
     OriginalIdBuffer = IdBuffer = ExAllocatePool(PagedPool, BufferLength);
-    if (!IdBuffer)
-    {
-        ZwClose(InstanceKey);
-        return;
-    }
-
-    /* Compute the buffer size */
+...
+    /* Compute the buffer size，轮流使用，只需要一个更大的空间即可*/
     if (HidLength > CidLength)
         BufferLength = HidLength;
     else
         BufferLength = CidLength;
 
-    PartialInfo = ExAllocatePool(PagedPool, BufferLength);
-    if (!PartialInfo)
-    {
-        ZwClose(InstanceKey);
-        ExFreePool(OriginalIdBuffer);
-        return;
-    }
+    PartialInfo = ExAllocatePool(PagedPool, BufferLength);//KEY_VALUE_PARTIAL_INFORMATION结构
+...
 
-    Status = ZwQueryValueKey(InstanceKey,
+    Status = ZwQueryValueKey(InstanceKey,//等同于DeviceNode->InstancePath
                              &HardwareIdU,
                              KeyValuePartialInformation,
-                             PartialInfo,
+                             PartialInfo,/*输出*/
                              HidLength,
-                             &HidLength);
-    if (Status != STATUS_SUCCESS)
-    {
-        ExFreePool(PartialInfo);
-        ExFreePool(OriginalIdBuffer);
-        ZwClose(InstanceKey);
-        return;
-    }
-
+                             &HidLength);/*输出*/
+...
     /* Copy in HID info first (without 2nd terminating NULL if CID is present) */
     HidLength = PartialInfo->DataLength - ((CidLength != 0) ? sizeof(WCHAR) : 0);
-    RtlCopyMemory(IdBuffer, PartialInfo->Data, HidLength);
-
+    RtlCopyMemory(IdBuffer, PartialInfo->Data, HidLength);//现在IdBuffer="$HardwareId"
+    
     if (CidLength != 0)
     {
         Status = ZwQueryValueKey(InstanceKey,
                                  &CompatibleIdU,
                                  KeyValuePartialInformation,
-                                 PartialInfo,
+                                 PartialInfo,/*输出*/
                                  CidLength,
-                                 &CidLength);
+                                 &CidLength);/*输出*/
         if (Status != STATUS_SUCCESS)
         {
             ExFreePool(PartialInfo);
@@ -177,7 +176,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
         
         /* Copy CID next */
         CidLength = PartialInfo->DataLength;
-        RtlCopyMemory(((PUCHAR)IdBuffer) + HidLength, PartialInfo->Data, CidLength);
+        RtlCopyMemory(((PUCHAR)IdBuffer) + HidLength, PartialInfo->Data, CidLength);//现在IdBuffer="$HardwareId$CompitableId"
     }
 
     /* Free our temp buffer */
@@ -188,18 +187,10 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                                OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
                                NULL,
                                NULL);
-    Status = ZwOpenKey(&CriticalDeviceKey,
+    Status = ZwOpenKey(&CriticalDeviceKey,/*输出*/
                        KEY_ENUMERATE_SUB_KEYS,
                        &ObjectAttributes);
-    if (!NT_SUCCESS(Status))
-    {
-        /* The critical device database doesn't exist because
-         * we're probably in 1st stage setup, but it's ok */
-        ExFreePool(OriginalIdBuffer);
-        ZwClose(InstanceKey);
-        return;
-    }
-
+...
     while (*IdBuffer)
     {
         USHORT StringLength = (USHORT)wcslen(IdBuffer) + 1, Index;
@@ -212,6 +203,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
             ULONG NeededLength;
             PKEY_BASIC_INFORMATION BasicInfo;
             
+            //下面打开HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\CriticalDeviceDatabase
             Status = ZwEnumerateKey(CriticalDeviceKey,
                                     Index,
                                     KeyBasicInformation,
@@ -225,19 +217,12 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                 UNICODE_STRING ChildIdNameU, RegKeyNameU;
 
                 BasicInfo = ExAllocatePool(PagedPool, NeededLength);
-                if (!BasicInfo)
-                {
-                    /* No memory */
-                    ExFreePool(OriginalIdBuffer);
-                    ZwClose(CriticalDeviceKey);
-                    ZwClose(InstanceKey);
-                    return;
-                }
+...
 
                 Status = ZwEnumerateKey(CriticalDeviceKey,
                                         Index,
                                         KeyBasicInformation,
-                                        BasicInfo,
+                                        BasicInfo,/*输出,内存上面刚刚分配*/
                                         NeededLength,
                                         &NeededLength);
                 if (Status != STATUS_SUCCESS)
@@ -249,7 +234,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
 
                 ChildIdNameU.Buffer = IdBuffer;
                 ChildIdNameU.MaximumLength = ChildIdNameU.Length = (StringLength - 1) * sizeof(WCHAR);
-                RegKeyNameU.Buffer = BasicInfo->Name;
+                RegKeyNameU.Buffer = BasicInfo->Name;//Control\CriticalDeviceDatabase下找到的硬件id名字
                 RegKeyNameU.MaximumLength = RegKeyNameU.Length = (USHORT)BasicInfo->NameLength;
 
                 if (RtlEqualUnicodeString(&ChildIdNameU, &RegKeyNameU, TRUE))
@@ -257,12 +242,12 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                     HANDLE ChildKeyHandle;
 
                     InitializeObjectAttributes(&ObjectAttributes,
-                                               &ChildIdNameU,
+                                               &ChildIdNameU,//硬件id或者兼容id
                                                OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
                                                CriticalDeviceKey,
                                                NULL);
 
-                    Status = ZwOpenKey(&ChildKeyHandle,
+                    Status = ZwOpenKey(&ChildKeyHandle,/*输出*/
                                        KEY_QUERY_VALUE,
                                        &ObjectAttributes);
                     if (Status != STATUS_SUCCESS)
@@ -272,8 +257,8 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                     }
 
                     /* Check if there's already a driver installed */
-                    Status = ZwQueryValueKey(InstanceKey,
-                                             &ClassGuidU,
+                    Status = ZwQueryValueKey(InstanceKey,//等同于DeviceNode->InstancePath
+                                             &ClassGuidU,//L"ClassGUID"
                                              KeyValuePartialInformation,
                                              NULL,
                                              0,
@@ -284,7 +269,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                         continue;
                     }
 
-                    Status = ZwQueryValueKey(ChildKeyHandle,
+                    Status = ZwQueryValueKey(ChildKeyHandle,//Control\CriticalDeviceDatabase下面硬件id或者兼容id项
                                              &ClassGuidU,
                                              KeyValuePartialInformation,
                                              NULL,
@@ -297,23 +282,14 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                     }
 
                     PartialInfo = ExAllocatePool(PagedPool, NeededLength);
-                    if (!PartialInfo)
-                    {
-                        ExFreePool(OriginalIdBuffer);
-                        ExFreePool(BasicInfo);
-                        ZwClose(InstanceKey);
-                        ZwClose(ChildKeyHandle);
-                        ZwClose(CriticalDeviceKey);
-                        return;
-                    }
-
+...
                     /* Read ClassGUID entry in the CDDB */
-                    Status = ZwQueryValueKey(ChildKeyHandle,
+                    Status = ZwQueryValueKey(ChildKeyHandle,//Control\CriticalDeviceDatabase下面硬件id或者兼容id项
                                              &ClassGuidU,
                                              KeyValuePartialInformation,
-                                             PartialInfo,
+                                             PartialInfo,/*输出*/
                                              NeededLength,
-                                             &NeededLength);
+                                             &NeededLength);/*输出*/
                     if (Status != STATUS_SUCCESS)
                     {
                         ExFreePool(BasicInfo);
@@ -321,11 +297,11 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                     }
 
                     /* Write it to the ENUM key */
-                    Status = ZwSetValueKey(InstanceKey,
+                    Status = ZwSetValueKey(InstanceKey,//等同于DeviceNode->InstancePath
                                            &ClassGuidU,
                                            0,
                                            REG_SZ,
-                                           PartialInfo->Data,
+                                           PartialInfo->Data,//把{...} GUID写到ENUM的DeviceNode->InstancePath
                                            PartialInfo->DataLength);
                     if (Status != STATUS_SUCCESS)
                     {
@@ -335,7 +311,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                         continue;
                     }
 
-                    Status = ZwQueryValueKey(ChildKeyHandle,
+                    Status = ZwQueryValueKey(ChildKeyHandle,//Control\CriticalDeviceDatabase下面硬件id或者兼容id项
                                              &ServiceU,
                                              KeyValuePartialInformation,
                                              NULL,
@@ -345,23 +321,14 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                     {
                         ExFreePool(PartialInfo);
                         PartialInfo = ExAllocatePool(PagedPool, NeededLength);
-                        if (!PartialInfo)
-                        {
-                            ExFreePool(OriginalIdBuffer);
-                            ExFreePool(BasicInfo);
-                            ZwClose(InstanceKey);
-                            ZwClose(ChildKeyHandle);
-                            ZwClose(CriticalDeviceKey);
-                            return;
-                        }
-
+...
                         /* Read the service entry from the CDDB */
                         Status = ZwQueryValueKey(ChildKeyHandle,
                                                  &ServiceU,
                                                  KeyValuePartialInformation,
-                                                 PartialInfo,
+                                                 PartialInfo,/*输出*/
                                                  NeededLength,
-                                                 &NeededLength);
+                                                 &NeededLength);/*输出*/
                         if (Status != STATUS_SUCCESS)
                         {
                             ExFreePool(BasicInfo);
@@ -375,7 +342,7 @@ IopInstallCriticalDevice(PDEVICE_NODE DeviceNode)
                                                &ServiceU,
                                                0,
                                                REG_SZ,
-                                               PartialInfo->Data,
+                                               PartialInfo->Data,//把Control\CriticalDeviceDatabase下硬件id下的服务项写到ENUM key
                                                PartialInfo->DataLength);
                         if (Status != STATUS_SUCCESS)
                         {
