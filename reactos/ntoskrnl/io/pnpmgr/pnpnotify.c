@@ -4,7 +4,7 @@
  * FILE:            ntoskrnl/io/pnpmgr/pnpnotify.c
  * PURPOSE:         Plug & Play notification functions
  * PROGRAMMERS:     Filip Navara (xnavara@volny.cz)
- *                  Herv� Poussineau (hpoussin@reactos.org)
+ *                  Hervé Poussineau (hpoussin@reactos.org)
  *                  Pierre Schweitzer
  */
 
@@ -18,11 +18,11 @@
 
 typedef struct _PNP_NOTIFY_ENTRY
 {
-    LIST_ENTRY PnpNotifyList;
+    LIST_ENTRY PnpNotifyList; //腰带，要点是放在最前面
     IO_NOTIFICATION_EVENT_CATEGORY EventCategory;
     PVOID Context;
     UNICODE_STRING Guid;
-    PFILE_OBJECT FileObject;
+    PFILE_OBJECT FileObject; //值得注意有fileobject对象，注册时填入
     PDRIVER_OBJECT DriverObject;
     PDRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationProc;
 } PNP_NOTIFY_ENTRY, *PPNP_NOTIFY_ENTRY;
@@ -57,11 +57,11 @@ IopNotifyPlugPlayNotification(
 		return;
 	}
 
-	switch (EventCategory)
+	switch (EventCategory) //本质上是重新解释参数并重构调用参数的过程
 	{
 		case EventCategoryDeviceInterfaceChange:
 		{
-			PDEVICE_INTERFACE_CHANGE_NOTIFICATION NotificationInfos;
+			PDEVICE_INTERFACE_CHANGE_NOTIFICATION NotificationInfos;//造一个调用需要的参数结构
 			NotificationStructure = NotificationInfos = ExAllocatePoolWithTag(
 				PagedPool,
 				sizeof(DEVICE_INTERFACE_CHANGE_NOTIFICATION),
@@ -73,9 +73,9 @@ IopNotifyPlugPlayNotification(
 			}
 			NotificationInfos->Version = 1;
 			NotificationInfos->Size = sizeof(DEVICE_INTERFACE_CHANGE_NOTIFICATION);
-			RtlCopyMemory(&NotificationInfos->Event, Event, sizeof(GUID));
-			RtlCopyMemory(&NotificationInfos->InterfaceClassGuid, EventCategoryData1, sizeof(GUID));
-			NotificationInfos->SymbolicLinkName = (PUNICODE_STRING)EventCategoryData2;
+			RtlCopyMemory(&NotificationInfos->Event, Event/*来自参数*/, sizeof(GUID));
+			RtlCopyMemory(&NotificationInfos->InterfaceClassGuid, EventCategoryData1/*来自参数*/, sizeof(GUID));
+			NotificationInfos->SymbolicLinkName = (PUNICODE_STRING)EventCategoryData2/*来自参数*/;
 			Status = RtlStringFromGUID(&NotificationInfos->InterfaceClassGuid, &GuidString);
 			if (!NT_SUCCESS(Status))
 			{
@@ -87,7 +87,7 @@ IopNotifyPlugPlayNotification(
 		}
 		case EventCategoryHardwareProfileChange:
 		{
-			PHWPROFILE_CHANGE_NOTIFICATION NotificationInfos;
+			PHWPROFILE_CHANGE_NOTIFICATION NotificationInfos;//造一个调用需要的参数结构
 			NotificationStructure = NotificationInfos = ExAllocatePoolWithTag(
 				PagedPool,
 				sizeof(HWPROFILE_CHANGE_NOTIFICATION),
@@ -99,14 +99,14 @@ IopNotifyPlugPlayNotification(
 			}
 			NotificationInfos->Version = 1;
 			NotificationInfos->Size = sizeof(HWPROFILE_CHANGE_NOTIFICATION);
-			RtlCopyMemory(&NotificationInfos->Event, Event, sizeof(GUID));
+			RtlCopyMemory(&NotificationInfos->Event, Event/*来自参数*/, sizeof(GUID));
 			break;
 		}
 		case EventCategoryTargetDeviceChange:
 		{
 			if (Event != &GUID_PNP_CUSTOM_NOTIFICATION)
 			{
-				PTARGET_DEVICE_REMOVAL_NOTIFICATION NotificationInfos;
+				PTARGET_DEVICE_REMOVAL_NOTIFICATION NotificationInfos;//造一个调用需要的参数结构
 				NotificationStructure = NotificationInfos = ExAllocatePoolWithTag(
 					PagedPool,
 					sizeof(TARGET_DEVICE_REMOVAL_NOTIFICATION),
@@ -118,7 +118,7 @@ IopNotifyPlugPlayNotification(
 				}
 				NotificationInfos->Version = 1;
 				NotificationInfos->Size = sizeof(TARGET_DEVICE_REMOVAL_NOTIFICATION);
-				RtlCopyMemory(&NotificationInfos->Event, Event, sizeof(GUID));
+				RtlCopyMemory(&NotificationInfos->Event, Event/*来自参数*/, sizeof(GUID));
 			}
 			else
 			{
@@ -132,7 +132,7 @@ IopNotifyPlugPlayNotification(
 					KeReleaseGuardedMutex(&PnpNotifyListLock);
 					return;
 				}
-				RtlCopyMemory(NotificationInfos, EventCategoryData1, sizeof(TARGET_DEVICE_CUSTOM_NOTIFICATION));
+				RtlCopyMemory(NotificationInfos, EventCategoryData1/*来自参数*/, sizeof(TARGET_DEVICE_CUSTOM_NOTIFICATION));
 			}
 			break;
 		}
@@ -147,7 +147,7 @@ IopNotifyPlugPlayNotification(
 	/* Loop through procedures registred in PnpNotifyListHead
 	 * list to find those that meet some criteria.
 	 */
-	ListEntry = PnpNotifyListHead.Flink;
+	ListEntry = PnpNotifyListHead.Flink; //全局变量
 	while (ListEntry != &PnpNotifyListHead)
 	{
 		ChangeEntry = CONTAINING_RECORD(ListEntry, PNP_NOTIFY_ENTRY, PnpNotifyList);
@@ -213,7 +213,7 @@ IopNotifyPlugPlayNotification(
 				ChangeEntry);
 
 			KeReleaseGuardedMutex(&PnpNotifyListLock);
-			(ChangeEntry->PnpNotificationProc)(
+			(ChangeEntry->PnpNotificationProc)( //调用回调！！！
 				NotificationStructure,
 				ChangeEntry->Context);
 			KeAcquireGuardedMutex(&PnpNotifyListLock);
@@ -280,6 +280,7 @@ IoRegisterPlugPlayNotification(IN IO_NOTIFICATION_EVENT_CATEGORY EventCategory,
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
+    //PNPNOTIFY_DEVICE_INTERFACE_INCLUDE_EXISTING_INTERFACES的意思是现在就要调用
     if (EventCategory == EventCategoryDeviceInterfaceChange	&&
         EventCategoryFlags & PNPNOTIFY_DEVICE_INTERFACE_INCLUDE_EXISTING_INTERFACES)
     {
