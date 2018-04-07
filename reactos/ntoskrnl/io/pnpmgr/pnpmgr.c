@@ -491,6 +491,12 @@ IopSendSurpriseRemoval(IN PDEVICE_OBJECT DeviceObject)
     IopSynchronousCall(DeviceObject, &Stack, &Dummy);
 }
 
+/*
+(1)IopQueueTargetDeviceEvent一个pending信息
+(2)IopNotifyPlugPlayNotification
+(3)向该所在的堆栈发送IRP_MN_QUERY_REMOVE_DEVICE包,如果下层有不同意，IopQueueTargetDeviceEvent一个否决信息
+*/
+
 static
 NTSTATUS
 NTAPI
@@ -510,7 +516,7 @@ IopQueryRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     Stack.MajorFunction = IRP_MJ_PNP;
     Stack.MinorFunction = IRP_MN_QUERY_REMOVE_DEVICE;
 
-    Status = IopSynchronousCall(DeviceObject, &Stack, &Dummy);//向最顶层发送
+    Status = IopSynchronousCall(DeviceObject, &Stack, &Dummy);//向最顶层发送，询问是否同意
     IopNotifyPlugPlayNotification(DeviceObject,
                                   EventCategoryTargetDeviceChange,
                                   &GUID_TARGET_DEVICE_QUERY_REMOVE,
@@ -530,7 +536,7 @@ IopQueryRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
 static
 NTSTATUS
 NTAPI
-IopQueryStopDevice(IN PDEVICE_OBJECT DeviceObject)
+IopQueryStopDevice(IN PDEVICE_OBJECT DeviceObject) //不需要询问
 {
     IO_STACK_LOCATION Stack;
     PVOID Dummy;
@@ -552,13 +558,13 @@ IopSendRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     PDEVICE_NODE DeviceNode = IopGetDeviceNode(DeviceObject);
 
     /* Drop all our state for this device in case it isn't really going away */
-    DeviceNode->Flags &= DNF_ENUMERATED | DNF_PROCESSED;
+    DeviceNode->Flags &= DNF_ENUMERATED | DNF_PROCESSED; //丢掉其他的标志
     
     RtlZeroMemory(&Stack, sizeof(IO_STACK_LOCATION));
     Stack.MajorFunction = IRP_MJ_PNP;
     Stack.MinorFunction = IRP_MN_REMOVE_DEVICE;
 
-    /* Drivers should never fail a IRP_MN_REMOVE_DEVICE request */
+    /* Drivers should NEVER fail a IRP_MN_REMOVE_DEVICE request */
     IopSynchronousCall(DeviceObject, &Stack, &Dummy);
 
     IopNotifyPlugPlayNotification(DeviceObject,
@@ -581,7 +587,7 @@ IopCancelRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     Stack.MajorFunction = IRP_MJ_PNP;
     Stack.MinorFunction = IRP_MN_CANCEL_REMOVE_DEVICE;
     
-    /* Drivers should never fail a IRP_MN_CANCEL_REMOVE_DEVICE request */
+    /* Drivers should NEVER fail a IRP_MN_CANCEL_REMOVE_DEVICE request */
     IopSynchronousCall(DeviceObject, &Stack, &Dummy);
     
     IopNotifyPlugPlayNotification(DeviceObject,
@@ -606,7 +612,10 @@ IopSendStopDevice(IN PDEVICE_OBJECT DeviceObject)
     /* Drivers should never fail a IRP_MN_STOP_DEVICE request */
     IopSynchronousCall(DeviceObject, &Stack, &Dummy);
 }
-
+ 
+//向DeviceObject所在的整个堆栈发送IRP_MN_START_DEVICE包
+//影响的标志：DeviceNode->Flags |= DNF_STARTED
+//           DeviceNode->Flags |= DNF_NEED_ENUMERATION_ONLY;
 VOID
 NTAPI
 IopStartDevice2(IN PDEVICE_OBJECT DeviceObject)
