@@ -23,7 +23,7 @@ typedef struct _PNP_NOTIFY_ENTRY
     PVOID Context;
     UNICODE_STRING Guid;
     PFILE_OBJECT FileObject; //值得注意有fileobject对象，注册时填入
-    PDRIVER_OBJECT DriverObject;
+    PDRIVER_OBJECT DriverObject;//驱动对象的目的在于防止卸载，而不是用其携带的信息
     PDRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationProc;
 } PNP_NOTIFY_ENTRY, *PPNP_NOTIFY_ENTRY;
 
