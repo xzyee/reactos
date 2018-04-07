@@ -613,7 +613,9 @@ IopSendStopDevice(IN PDEVICE_OBJECT DeviceObject)
     IopSynchronousCall(DeviceObject, &Stack, &Dummy);
 }
  
-//向DeviceObject所在的整个堆栈发送IRP_MN_START_DEVICE包
+//（1）向DeviceObject所在的整个堆栈发送IRP_MN_START_DEVICE包
+//（2）调用IopQueryDeviceCapabilities向DeviceObject（pdo？）发送查询设备能力
+//（3）调用IoInvalidateDeviceState使得IRP_MN_QUERY_PNP_DEVICE_STATE在未来被发送
 //影响的标志：DeviceNode->Flags |= DNF_STARTED
 //           DeviceNode->Flags |= DNF_NEED_ENUMERATION_ONLY;
 VOID
@@ -799,6 +801,11 @@ ByeBye:
    return Status;
 }
 
+
+//向DeviceNode->PhysicalDeviceObject发送IRP_MN_QUERY_CAPABILITIES包查询DeviceCaps
+//根据DeviceCaps做一些事情：
+// 更新DeviceNode->UserFlags：DNUF_DONT_SHOW_IN_UI
+// 更新注册表中InstanceKey下面的Capabilities和UINumber
 NTSTATUS
 NTAPI
 IopQueryDeviceCapabilities(PDEVICE_NODE DeviceNode,
@@ -832,6 +839,7 @@ IopQueryDeviceCapabilities(PDEVICE_NODE DeviceNode,
        return Status;
    }
 
+   //下面CapabilityFlags的确是_DEVICE_CAPABILITIES结构中的各个标志位之集合
    DeviceNode->CapabilityFlags = *(PULONG)((ULONG_PTR)&DeviceCaps->Version + sizeof(DeviceCaps->Version));
 
    if (DeviceCaps->NoDisplayInUI)
