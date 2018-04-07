@@ -496,7 +496,6 @@ IopSendSurpriseRemoval(IN PDEVICE_OBJECT DeviceObject)
 (2)IopNotifyPlugPlayNotification
 (3)向该所在的堆栈发送IRP_MN_QUERY_REMOVE_DEVICE包,如果下层有不同意，IopQueueTargetDeviceEvent一个否决信息
 */
-
 static
 NTSTATUS
 NTAPI
@@ -1593,7 +1592,7 @@ IopSetDeviceInstanceData(HANDLE InstanceKey,
 
 NTSTATUS
 IopGetParentIdPrefix(PDEVICE_NODE DeviceNode,
-                     PUNICODE_STRING ParentIdPrefix)
+                     PUNICODE_STRING ParentIdPrefix)/*输出*/
 {
    ULONG KeyNameBufferLength;
    PKEY_VALUE_PARTIAL_INFORMATION ParentIdPrefixInformation = NULL;
@@ -1617,31 +1616,26 @@ IopGetParentIdPrefix(PDEVICE_NODE DeviceNode,
    /* 1. Try to retrieve ParentIdPrefix from registry */
    KeyNameBufferLength = FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data[0]) + MAX_PATH * sizeof(WCHAR);
    ParentIdPrefixInformation = ExAllocatePool(PagedPool, KeyNameBufferLength + sizeof(WCHAR));
-   if (!ParentIdPrefixInformation)
-   {
-       return STATUS_INSUFFICIENT_RESOURCES;
-   }
-
+...
+    
    KeyName.Buffer = ExAllocatePool(PagedPool, (49 * sizeof(WCHAR)) + DeviceNode->Parent->InstancePath.Length);
-   if (!KeyName.Buffer)
-   {
-       Status = STATUS_INSUFFICIENT_RESOURCES;
-       goto cleanup;
-   }
+...
    KeyName.Length = 0;
    KeyName.MaximumLength = (49 * sizeof(WCHAR)) + DeviceNode->Parent->InstancePath.Length;
 
    RtlAppendUnicodeToString(&KeyName, L"\\Registry\\Machine\\System\\CurrentControlSet\\Enum\\");
    RtlAppendUnicodeStringToString(&KeyName, &DeviceNode->Parent->InstancePath);
 
+   //打开注册表：\\Registry\\Machine\\System\\CurrentControlSet\\Enum\\$(DeviceNode->Parent->InstancePath)
    Status = IopOpenRegistryKeyEx(&hKey, NULL, &KeyName, KEY_QUERY_VALUE | KEY_SET_VALUE);
-   if (!NT_SUCCESS(Status))
-      goto cleanup;
+...
    RtlInitUnicodeString(&ValueName, L"ParentIdPrefix");
    Status = ZwQueryValueKey(
-      hKey, &ValueName,
-      KeyValuePartialInformation, ParentIdPrefixInformation,
-      KeyNameBufferLength, &KeyNameBufferLength);
+      hKey, &ValueName,/*"ParentIdPrefix"*/
+      KeyValuePartialInformation,
+      ParentIdPrefixInformation,/*输出*/
+      KeyNameBufferLength,
+      &KeyNameBufferLength);/*输出*/
    if (NT_SUCCESS(Status))
    {
       if (ParentIdPrefixInformation->Type != REG_SZ)
@@ -1660,17 +1654,19 @@ IopGetParentIdPrefix(PDEVICE_NODE DeviceNode,
       goto cleanup;
    }
 
+   //如果不存在
    /* 2. Create the ParentIdPrefix value */
    crc32 = RtlComputeCrc32(0,
                            (PUCHAR)DeviceNode->Parent->InstancePath.Buffer,
                            DeviceNode->Parent->InstancePath.Length);
 
+   //注意ParentIdPrefix的格式是：level&校验码
    swprintf((PWSTR)ParentIdPrefixInformation->Data, L"%lx&%lx", DeviceNode->Parent->Level, crc32);
    RtlInitUnicodeString(&KeyValue, (PWSTR)ParentIdPrefixInformation->Data);
 
    /* 3. Try to write the ParentIdPrefix to registry */
    Status = ZwSetValueKey(hKey,
-                          &ValueName,
+                          &ValueName,/*"ParentIdPrefix"*/
                           0,
                           REG_SZ,
                           (PVOID)KeyValue.Buffer,
@@ -1703,7 +1699,7 @@ IopQueryHardwareIds(PDEVICE_NODE DeviceNode,
    DPRINT("Sending IRP_MN_QUERY_ID.BusQueryHardwareIDs to device stack\n");
 
    RtlZeroMemory(&Stack, sizeof(Stack));
-   Stack.Parameters.QueryId.IdType = BusQueryHardwareIDs;
+   Stack.Parameters.QueryId.IdType = BusQueryHardwareIDs;//BusQueryHardwareIDs
    Status = IopInitiatePnpIrp(DeviceNode->PhysicalDeviceObject,
                               &IoStatusBlock,
                               IRP_MN_QUERY_ID,
@@ -1730,10 +1726,10 @@ IopQueryHardwareIds(PDEVICE_NODE DeviceNode,
 
       RtlInitUnicodeString(&ValueName, L"HardwareID");
       Status = ZwSetValueKey(InstanceKey,
-                 &ValueName,
+                 &ValueName,//"HardwareID"
                  0,
                  REG_MULTI_SZ,
-                 (PVOID)IoStatusBlock.Information,
+                 (PVOID)IoStatusBlock.Information,//取回来的HardwareID在此
                  (TotalLength + 1) * sizeof(WCHAR));
       if (!NT_SUCCESS(Status))
       {
@@ -1762,7 +1758,7 @@ IopQueryCompatibleIds(PDEVICE_NODE DeviceNode,
    DPRINT("Sending IRP_MN_QUERY_ID.BusQueryCompatibleIDs to device stack\n");
 
    RtlZeroMemory(&Stack, sizeof(Stack));
-   Stack.Parameters.QueryId.IdType = BusQueryCompatibleIDs;
+   Stack.Parameters.QueryId.IdType = BusQueryCompatibleIDs;//BusQueryCompatibleIDs
    Status = IopInitiatePnpIrp(
       DeviceNode->PhysicalDeviceObject,
       &IoStatusBlock,
@@ -1790,7 +1786,7 @@ IopQueryCompatibleIds(PDEVICE_NODE DeviceNode,
 
       RtlInitUnicodeString(&ValueName, L"CompatibleIDs");
       Status = ZwSetValueKey(InstanceKey,
-         &ValueName,
+         &ValueName,//CompatibleIDs
          0,
          REG_MULTI_SZ,
          (PVOID)IoStatusBlock.Information,
@@ -1892,7 +1888,7 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
 
    DPRINT("Sending IRP_MN_QUERY_ID.BusQueryDeviceID to device stack\n");
 
-   Stack.Parameters.QueryId.IdType = BusQueryDeviceID;
+   Stack.Parameters.QueryId.IdType = BusQueryDeviceID;//BusQueryDeviceID
    Status = IopInitiatePnpIrp(DeviceNode->PhysicalDeviceObject,
                               &IoStatusBlock,
                               IRP_MN_QUERY_ID,
