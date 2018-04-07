@@ -989,6 +989,20 @@ Quickie:
  * RETURN VALUE
  *     Status
  */
+/*
+(1)创建一个新Node，其以下字段被设置：
+Node->PhysicalDeviceObject
+Node->InstancePath
+Node->ServiceName
+Node->Parent
+Node->Sibling
+Node->Level
+(2)如果是传统驱动的话，还要写注册表
+Legacy = 1
+Class  LegacyDriver\0
+ClassGUID = {8ECC055D-047F-11D1-A537-0000F8753ED1}\0
+DeviceDesc = "vmbus",比如
+*/
 NTSTATUS
 IopCreateDeviceNode(PDEVICE_NODE ParentNode,
                     PDEVICE_OBJECT PhysicalDeviceObject,
@@ -1007,68 +1021,42 @@ IopCreateDeviceNode(PDEVICE_NODE ParentNode,
    UNICODE_STRING ClassGUID;
    HANDLE InstanceHandle;
 
-   DPRINT("ParentNode 0x%p PhysicalDeviceObject 0x%p ServiceName %wZ\n",
-      ParentNode, PhysicalDeviceObject, ServiceName);
+...
 
    Node = (PDEVICE_NODE)ExAllocatePool(NonPagedPool, sizeof(DEVICE_NODE));
-   if (!Node)
-   {
-      return STATUS_INSUFFICIENT_RESOURCES;
-   }
+...
 
    RtlZeroMemory(Node, sizeof(DEVICE_NODE));
 
    if (!ServiceName)
-       ServiceName1 = &UnknownDeviceName;
+       ServiceName1 = &UnknownDeviceName; //L"UNKNOWN"
    else
-       ServiceName1 = ServiceName;
-
+       ServiceName1 = ServiceName;//比如：L"VMBUS"
+    
+   //pnp驱动都有pdo，没有pdo的情况一定是一个传统的驱动的根，那么为其创建一个root形式的pdo
    if (!PhysicalDeviceObject)
    {
       FullServiceName.MaximumLength = LegacyPrefix.Length + ServiceName1->Length;
       FullServiceName.Length = 0;
       FullServiceName.Buffer = ExAllocatePool(PagedPool, FullServiceName.MaximumLength);
-      if (!FullServiceName.Buffer)
-      {
-          ExFreePool(Node);
-          return STATUS_INSUFFICIENT_RESOURCES;
-      }
+...
 
-      RtlAppendUnicodeStringToString(&FullServiceName, &LegacyPrefix);
-      RtlAppendUnicodeStringToString(&FullServiceName, ServiceName1);
-
-      Status = PnpRootCreateDevice(&FullServiceName, NULL, &PhysicalDeviceObject, &Node->InstancePath);
-      if (!NT_SUCCESS(Status))
-      {
-         DPRINT1("PnpRootCreateDevice() failed with status 0x%08X\n", Status);
-         ExFreePool(Node);
-         return Status;
-      }
+      RtlAppendUnicodeStringToString(&FullServiceName, &LegacyPrefix);//L"LEGACY_"
+      RtlAppendUnicodeStringToString(&FullServiceName, ServiceName1); //比如：L"LEGACY_VMBUS"
+      Status = PnpRootCreateDevice(&FullServiceName, NULL, &PhysicalDeviceObject/*输出*/, &Node->InstancePath/*输出*/);
+...
 
       /* Create the device key for legacy drivers */
       Status = IopCreateDeviceKeyPath(&Node->InstancePath, REG_OPTION_VOLATILE, &InstanceHandle);
-      if (!NT_SUCCESS(Status))
-      {
-          ZwClose(InstanceHandle);
-          ExFreePool(Node);
-          ExFreePool(FullServiceName.Buffer);
-          return Status;
-      }
-
+...
       Node->ServiceName.Buffer = ExAllocatePool(PagedPool, ServiceName1->Length);
-      if (!Node->ServiceName.Buffer)
-      {
-          ZwClose(InstanceHandle);
-          ExFreePool(Node);
-          ExFreePool(FullServiceName.Buffer);
-          return Status;
-      }
-
+...
       Node->ServiceName.MaximumLength = ServiceName1->Length;
       Node->ServiceName.Length = 0;
 
-      RtlAppendUnicodeStringToString(&Node->ServiceName, ServiceName1);
+      RtlAppendUnicodeStringToString(&Node->ServiceName, ServiceName1);//比如：L"VMBUS"
 
+      //写注册表
       if (ServiceName)
       {
           RtlInitUnicodeString(&KeyName, L"Service");
@@ -1089,9 +1077,8 @@ IopCreateDeviceNode(PDEVICE_NODE ParentNode,
               Status = ZwSetValueKey(InstanceHandle, &KeyName, 0, REG_SZ, ClassName.Buffer, ClassName.Length + sizeof(UNICODE_NULL));
               if (NT_SUCCESS(Status))
               {
-                  RtlInitUnicodeString(&KeyName, L"ClassGUID");
-
-                  RtlInitUnicodeString(&ClassGUID, L"{8ECC055D-047F-11D1-A537-0000F8753ED1}\0");
+                  RtlInitUnicodeString(&KeyName, L"ClassGUID");//键名
+                  RtlInitUnicodeString(&ClassGUID, L"{8ECC055D-047F-11D1-A537-0000F8753ED1}\0");////键值为传统驱动的GUID
                   Status = ZwSetValueKey(InstanceHandle, &KeyName, 0, REG_SZ, ClassGUID.Buffer, ClassGUID.Length + sizeof(UNICODE_NULL));
                   if (NT_SUCCESS(Status))
                   {
@@ -1118,10 +1105,9 @@ IopCreateDeviceNode(PDEVICE_NODE ParentNode,
       IopDeviceNodeSetFlag(Node, DNF_STARTED);
    }
 
-   Node->PhysicalDeviceObject = PhysicalDeviceObject;
-
-   ((PEXTENDED_DEVOBJ_EXTENSION)PhysicalDeviceObject->DeviceObjectExtension)->DeviceNode = Node;
-
+   Node->PhysicalDeviceObject = PhysicalDeviceObject;//赋值
+ 
+   ((PEXTENDED_DEVOBJ_EXTENSION)PhysicalDeviceObject->DeviceObjectExtension)->DeviceNode = Node;//互指
     if (ParentNode)
     {
         KeAcquireSpinLock(&IopDeviceTreeLock, &OldIrql);
