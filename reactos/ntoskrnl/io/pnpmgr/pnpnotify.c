@@ -19,9 +19,9 @@
 typedef struct _PNP_NOTIFY_ENTRY
 {
     LIST_ENTRY PnpNotifyList; //腰带，要点是放在最前面
-    IO_NOTIFICATION_EVENT_CATEGORY EventCategory;
+    IO_NOTIFICATION_EVENT_CATEGORY EventCategory;//先比较这个
     PVOID Context;
-    UNICODE_STRING Guid;
+    UNICODE_STRING Guid;//再比较这个
     PFILE_OBJECT FileObject; //值得注意有fileobject对象，注册时填入
     PDRIVER_OBJECT DriverObject;//驱动对象的目的在于防止卸载，而不是用其携带的信息
     PDRIVER_NOTIFICATION_CALLBACK_ROUTINE PnpNotificationProc;
@@ -76,7 +76,7 @@ IopNotifyPlugPlayNotification(
 			RtlCopyMemory(&NotificationInfos->Event, Event/*来自参数*/, sizeof(GUID));
 			RtlCopyMemory(&NotificationInfos->InterfaceClassGuid, EventCategoryData1/*来自参数*/, sizeof(GUID));
 			NotificationInfos->SymbolicLinkName = (PUNICODE_STRING)EventCategoryData2/*来自参数*/;
-			Status = RtlStringFromGUID(&NotificationInfos->InterfaceClassGuid, &GuidString);
+			Status = RtlStringFromGUID(&NotificationInfos->InterfaceClassGuid, &GuidString/*输出*/);
 			if (!NT_SUCCESS(Status))
 			{
 				KeReleaseGuardedMutex(&PnpNotifyListLock);
