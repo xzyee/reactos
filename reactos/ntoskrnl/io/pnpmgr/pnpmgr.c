@@ -1056,7 +1056,7 @@ IopCreateDeviceNode(PDEVICE_NODE ParentNode,
 
       RtlAppendUnicodeStringToString(&Node->ServiceName, ServiceName1);//比如：L"VMBUS"
 
-      //写注册表
+      //传统驱动要写注册表
       if (ServiceName)
       {
           RtlInitUnicodeString(&KeyName, L"Service");
@@ -1273,12 +1273,13 @@ IopSynchronousCall(IN PDEVICE_OBJECT DeviceObject,
     return Status;
 }
 
+//构造一个pnp的irp并向堆栈顶层同步发送
 NTSTATUS
 NTAPI
-IopInitiatePnpIrp(IN PDEVICE_OBJECT DeviceObject,
+IopInitiatePnpIrp(IN PDEVICE_OBJECT DeviceObject, //向DeviceObject所在堆栈的最顶部发送
                   IN OUT PIO_STATUS_BLOCK IoStatusBlock,
                   IN UCHAR MinorFunction,
-                  IN PIO_STACK_LOCATION Stack OPTIONAL)
+                  IN PIO_STACK_LOCATION Stack OPTIONAL) //Stack包括Parameters，有的irp可能需要这些参数
 {
     IO_STACK_LOCATION IoStackLocation;
     
@@ -1378,13 +1379,16 @@ IopTraverseDeviceTree(PDEVICETREE_TRAVERSE_CONTEXT Context)
  *     This method can create nested trees, so parent of RegistryPath can
  *     be not existant, and will be created if needed.
  */
+/*
+在注册表Root目录下，依次创建RegistryPath所包含的子key，并返回最末一个子key的句柄
+*/
 NTSTATUS
 NTAPI
 IopCreateDeviceKeyPath(IN PCUNICODE_STRING RegistryPath,
                        IN ULONG CreateOptions,
                        OUT PHANDLE Handle)
 {
-    UNICODE_STRING EnumU = RTL_CONSTANT_STRING(ENUM_ROOT);
+    UNICODE_STRING EnumU = RTL_CONSTANT_STRING(ENUM_ROOT);//"Root"
     HANDLE hParent = NULL, hKey;
     OBJECT_ATTRIBUTES ObjectAttributes;
     UNICODE_STRING KeyName;
@@ -1400,13 +1404,8 @@ IopCreateDeviceKeyPath(IN PCUNICODE_STRING RegistryPath,
     if (ExpInTextModeSetup) CreateOptions |= REG_OPTION_VOLATILE;
 
     /* Open root key for device instances */
-    Status = IopOpenRegistryKeyEx(&hParent, NULL, &EnumU, KEY_CREATE_SUB_KEY);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("ZwOpenKey('%wZ') failed with status 0x%08lx\n", &EnumU, Status);
-        return Status;
-    }
-
+    Status = IopOpenRegistryKeyEx(&hParent, NULL, &EnumU, KEY_CREATE_SUB_KEY);//打开注册表root目录项作为hParent
+...
     Current = KeyName.Buffer = RegistryPath->Buffer;
     Last = &RegistryPath->Buffer[RegistryPath->Length / sizeof(WCHAR)];
 
@@ -1454,7 +1453,7 @@ IopCreateDeviceKeyPath(IN PCUNICODE_STRING RegistryPath,
         if (Current == Last)
         {
             /* Yes, return success */
-            *Handle = hKey;
+            *Handle = hKey; //最末的句柄
             return STATUS_SUCCESS;
         }
 
@@ -1467,6 +1466,14 @@ IopCreateDeviceKeyPath(IN PCUNICODE_STRING RegistryPath,
     return STATUS_UNSUCCESSFUL;
 }
 
+/*
+写注册表，在InstanceKey下创建以下子key
+LogConf
+    BootConfig = DeviceNode->BootResources
+    BasicConfigVector = DeviceNode->ResourceRequirements
+ConfigFlags 缺省为0
+Control 缺省为NULL 
+*/
 NTSTATUS
 IopSetDeviceInstanceData(HANDLE InstanceKey,
                          PDEVICE_NODE DeviceNode)
@@ -1819,8 +1826,8 @@ IopQueryCompatibleIds(PDEVICE_NODE DeviceNode,
  */
 
 NTSTATUS
-IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,
-                                PVOID Context)
+IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
+                                PVOID Context) //父node
 {
    IO_STATUS_BLOCK IoStatusBlock;
    PDEVICE_NODE ParentDeviceNode;
