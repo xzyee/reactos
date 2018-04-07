@@ -388,6 +388,9 @@ A value entry of the key.
     ZwClose(CriticalDeviceKey);
 }
 
+
+//调用AddDevice例程
+//DeviceNode->Flags |= DNF_ADDED但是不一定加上DNF_STARTED
 NTSTATUS
 FASTCALL
 IopInitializeDevice(PDEVICE_NODE DeviceNode,
@@ -403,6 +406,7 @@ IopInitializeDevice(PDEVICE_NODE DeviceNode,
       return STATUS_SUCCESS;
    }
 
+   //判断传统驱动的方法是看有没有AddDevice例程
    if (!DriverObject->DriverExtension->AddDevice)
    {
       DeviceNode->Flags |= DNF_LEGACY_DRIVER;
@@ -416,12 +420,12 @@ IopInitializeDevice(PDEVICE_NODE DeviceNode,
 
    /* This is a Plug and Play driver */
    DPRINT("Plug and Play driver found\n");
-   ASSERT(DeviceNode->PhysicalDeviceObject);
-
+   ASSERT(DeviceNode->PhysicalDeviceObject);//到这里必须pdo存在？
+    
    DPRINT("Calling %wZ->AddDevice(%wZ)\n",
       &DriverObject->DriverName,
       &DeviceNode->InstancePath);
-   Status = DriverObject->DriverExtension->AddDevice(
+   Status = DriverObject->DriverExtension->AddDevice( ///!!!
       DriverObject, DeviceNode->PhysicalDeviceObject);
    if (!NT_SUCCESS(Status))
    {
@@ -434,8 +438,7 @@ IopInitializeDevice(PDEVICE_NODE DeviceNode,
       return Status;
    }
 
-   Fdo = IoGetAttachedDeviceReference(DeviceNode->PhysicalDeviceObject);
-
+   Fdo = IoGetAttachedDeviceReference(DeviceNode->PhysicalDeviceObject);//堆栈最高层
    /* Check if we have a ACPI device (needed for power management) */
    if (Fdo->DeviceType == FILE_DEVICE_ACPI)
    {
@@ -501,14 +504,13 @@ IopQueryRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     ASSERT(DeviceNode);
     
     IopQueueTargetDeviceEvent(&GUID_DEVICE_REMOVE_PENDING,
-                              &DeviceNode->InstancePath);
+                              &DeviceNode->InstancePath);//DeviceIds，字符串
     
     RtlZeroMemory(&Stack, sizeof(IO_STACK_LOCATION));
     Stack.MajorFunction = IRP_MJ_PNP;
     Stack.MinorFunction = IRP_MN_QUERY_REMOVE_DEVICE;
 
-    Status = IopSynchronousCall(DeviceObject, &Stack, &Dummy);
-
+    Status = IopSynchronousCall(DeviceObject, &Stack, &Dummy);//向最顶层发送
     IopNotifyPlugPlayNotification(DeviceObject,
                                   EventCategoryTargetDeviceChange,
                                   &GUID_TARGET_DEVICE_QUERY_REMOVE,
@@ -519,7 +521,7 @@ IopQueryRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     {
         DPRINT1("Removal vetoed by %wZ\n", &DeviceNode->InstancePath);
         IopQueueTargetDeviceEvent(&GUID_DEVICE_REMOVAL_VETOED,
-                                  &DeviceNode->InstancePath);
+                                  &DeviceNode->InstancePath);//DeviceIds，字符串
     }
 
     return Status;
@@ -1197,10 +1199,12 @@ IopFreeDeviceNode(PDEVICE_NODE DeviceNode)
    return STATUS_SUCCESS;
 }
 
+
+//注意向最顶层发送！
 NTSTATUS
 NTAPI
 IopSynchronousCall(IN PDEVICE_OBJECT DeviceObject,
-                   IN PIO_STACK_LOCATION IoStackLocation,
+                   IN PIO_STACK_LOCATION IoStackLocation,//为新irp准备的堆栈
                    OUT PVOID *Information)
 {
     PIRP Irp;
@@ -1212,7 +1216,7 @@ IopSynchronousCall(IN PDEVICE_OBJECT DeviceObject,
     PAGED_CODE();
     
     /* Call the top of the device stack */
-    TopDeviceObject = IoGetAttachedDeviceReference(DeviceObject);
+    TopDeviceObject = IoGetAttachedDeviceReference(DeviceObject);//最顶层
     
     /* Allocate an IRP */
     Irp = IoAllocateIrp(TopDeviceObject->StackSize, FALSE);
@@ -1234,8 +1238,8 @@ IopSynchronousCall(IN PDEVICE_OBJECT DeviceObject,
     KeInitializeEvent(&Event, SynchronizationEvent, FALSE);
     
     /* Set them up */
-    Irp->UserIosb = &IoStatusBlock;
-    Irp->UserEvent = &Event;
+    Irp->UserIosb = &IoStatusBlock;//重要
+    Irp->UserEvent = &Event;//重要
     
     /* Queue the IRP */
     Irp->Tail.Overlay.Thread = PsGetCurrentThread();
