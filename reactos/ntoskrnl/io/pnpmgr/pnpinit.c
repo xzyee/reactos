@@ -371,6 +371,17 @@ PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
     return Status;
 }
 
+/*
+CurrentControlSet已经存在
+
+创建CurrentControlSet\Control
+    CurrentControlSet\Control\DeviceClasses
+
+创建CurrentControlSet\Enum
+    CurrentControlSet\Enum\Root
+    CurrentControlSet\Enum\HTREE\ROOT\0
+
+*/
 NTSTATUS
 NTAPI
 INIT_FUNCTION
@@ -379,7 +390,7 @@ IopInitializePlugPlayServices(VOID)
     NTSTATUS Status;
     ULONG Disposition;
     HANDLE KeyHandle, EnumHandle, ParentHandle, TreeHandle, ControlHandle;
-    UNICODE_STRING KeyName = RTL_CONSTANT_STRING(L"\\REGISTRY\\MACHINE\\SYSTEM\\CURRENTCONTROLSET");
+    UNICODE_STRING KeyName = RTL_CONSTANT_STRING(L"\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet");
     UNICODE_STRING PnpManagerDriverName = RTL_CONSTANT_STRING(DRIVER_ROOT_NAME L"PnpManager");
     PDEVICE_OBJECT Pdo;
     
@@ -398,21 +409,20 @@ IopInitializePlugPlayServices(VOID)
     if (!NT_SUCCESS(Status)) return Status;
     
     /* Open the current control set */
-    Status = IopOpenRegistryKeyEx(&KeyHandle,
+    Status = IopOpenRegistryKeyEx(&KeyHandle,//输出，=..\CurrentControlSet
                                   NULL,
-                                  &KeyName,
+                                  &KeyName,//L"\\REGISTRY\\MACHINE\\SYSTEM\\CurrentControlSet"
                                   KEY_ALL_ACCESS);
-    if (!NT_SUCCESS(Status)) return Status;
-
+...
     /* Create the control key */
     RtlInitUnicodeString(&KeyName, L"Control");
-    Status = IopCreateRegistryKeyEx(&ControlHandle,
+    Status = IopCreateRegistryKeyEx(&ControlHandle,//输出，=..\CurrentControlSet\Control
                                     KeyHandle,
-                                    &KeyName,
+                                    &KeyName,//L"Control"
                                     KEY_ALL_ACCESS,
                                     REG_OPTION_NON_VOLATILE,
                                     &Disposition);
-    if (!NT_SUCCESS(Status)) return Status;
+   ...
 
     /* Check if it's a new key */
     if (Disposition == REG_CREATED_NEW_KEY)
@@ -420,10 +430,11 @@ IopInitializePlugPlayServices(VOID)
         HANDLE DeviceClassesHandle;
 
         /* Create the device classes key */
+        //在CurrentControlSet\Control下DeviceClasses
         RtlInitUnicodeString(&KeyName, L"DeviceClasses");
-        Status = IopCreateRegistryKeyEx(&DeviceClassesHandle,
-                                        ControlHandle,
-                                        &KeyName,
+        Status = IopCreateRegistryKeyEx(&DeviceClassesHandle,//输出，=CurrentControlSet\Control\DeviceClasses
+                                        ControlHandle,//父=Control
+                                        &KeyName,//L"DeviceClasses"
                                         KEY_ALL_ACCESS,
                                         REG_OPTION_NON_VOLATILE,
                                         &Disposition);
@@ -435,9 +446,10 @@ IopInitializePlugPlayServices(VOID)
     ZwClose(ControlHandle);
 
     /* Create the enum key */
-    RtlInitUnicodeString(&KeyName, REGSTR_KEY_ENUM);
-    Status = IopCreateRegistryKeyEx(&EnumHandle,
-                                    KeyHandle,
+    //在CurrentControlSet下创建Enum
+    RtlInitUnicodeString(&KeyName, REGSTR_KEY_ENUM);//"Enum"
+    Status = IopCreateRegistryKeyEx(&EnumHandle,//输出，=CurrentControlSet\Enum
+                                    KeyHandle,//父=CurrentControlSet
                                     &KeyName,
                                     KEY_ALL_ACCESS,
                                     REG_OPTION_NON_VOLATILE,
@@ -454,9 +466,9 @@ IopInitializePlugPlayServices(VOID)
     /* Create the root key */
     ParentHandle = EnumHandle;
     RtlInitUnicodeString(&KeyName, REGSTR_KEY_ROOTENUM);
-    Status = IopCreateRegistryKeyEx(&EnumHandle,
-                                    ParentHandle,
-                                    &KeyName,
+    Status = IopCreateRegistryKeyEx(&EnumHandle, //输出，=.\CurrentControlSet\Enum\Root
+                                    ParentHandle, //父=Enum
+                                    &KeyName,//"Root"
                                     KEY_ALL_ACCESS,
                                     REG_OPTION_NON_VOLATILE,
                                     &Disposition);
@@ -473,10 +485,10 @@ IopInitializePlugPlayServices(VOID)
     if (NT_SUCCESS(Status))
     {
         /* Create the root dev node */
-        RtlInitUnicodeString(&KeyName, REGSTR_VAL_ROOT_DEVNODE);
-        Status = IopCreateRegistryKeyEx(&TreeHandle,
-                                        EnumHandle,
-                                        &KeyName,
+        RtlInitUnicodeString(&KeyName, REGSTR_VAL_ROOT_DEVNODE);//"HTREE\\ROOT\\0"
+        Status = IopCreateRegistryKeyEx(&TreeHandle,//输出，=CurrentControlSet\Enum\HTREE\ROOT\0
+                                        EnumHandle,//父=Enum
+                                        &KeyName,//"HTREE\\ROOT\\0"
                                         KEY_ALL_ACCESS,
                                         REG_OPTION_NON_VOLATILE,
                                         NULL);
@@ -486,32 +498,24 @@ IopInitializePlugPlayServices(VOID)
 
     /* Create the root driver */
     Status = IoCreateDriver(&PnpManagerDriverName, PnpRootDriverEntry);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("IoCreateDriverObject() failed\n");
-        KeBugCheckEx(PHASE1_INITIALIZATION_FAILED, Status, 0, 0, 0);
-    }
+    //                          L"PnpManager"
+...
     
     /* Create the root PDO */
-    Status = IoCreateDevice(IopRootDriverObject,
+    Status = IoCreateDevice(IopRootDriverObject, //上面一行刚创建的，在PnpRootDriverEntry中被赋值
                             sizeof(IOPNP_DEVICE_EXTENSION),
                             NULL,
-                            FILE_DEVICE_CONTROLLER,
+                            FILE_DEVICE_CONTROLLER,//控制器?
                             0,
                             FALSE,
                             &Pdo);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("IoCreateDevice() failed\n");
-        KeBugCheckEx(PHASE1_INITIALIZATION_FAILED, Status, 0, 0, 0);
-    }
+...
     
     /* This is a bus enumerated device */
-    Pdo->Flags |= DO_BUS_ENUMERATED_DEVICE;
+    Pdo->Flags |= DO_BUS_ENUMERATED_DEVICE;//虚拟BUS？
     
     /* Create the root device node */
-    IopRootDeviceNode = PipAllocateDeviceNode(Pdo);
-
+    IopRootDeviceNode = PipAllocateDeviceNode(Pdo);//第一个DeviceNode
     /* Set flags */
     IopRootDeviceNode->Flags |= DNF_STARTED + DNF_PROCESSED + DNF_ENUMERATED +
                                 DNF_MADEUP + DNF_NO_RESOURCE_REQUIRED +
@@ -519,7 +523,7 @@ IopInitializePlugPlayServices(VOID)
     
     /* Create instance path */
     RtlCreateUnicodeString(&IopRootDeviceNode->InstancePath,
-                           REGSTR_VAL_ROOT_DEVNODE);
+                           REGSTR_VAL_ROOT_DEVNODE); //"HTREE\\ROOT\\0"
     
     /* Call the add device routine */
     IopRootDriverObject->DriverExtension->AddDevice(IopRootDriverObject,
@@ -527,7 +531,7 @@ IopInitializePlugPlayServices(VOID)
 
     /* Initialize PnP-Event notification support */
     Status = IopInitPlugPlayEvents();
-    if (!NT_SUCCESS(Status)) return Status;
+    ...
     
     /* Report the device to the user-mode pnp manager */
     IopQueueTargetDeviceEvent(&GUID_DEVICE_ARRIVAL,
@@ -540,7 +544,7 @@ IopInitializePlugPlayServices(VOID)
     
     /* Launch the firmware mapper */
     Status = IopUpdateRootKey();
-    if (!NT_SUCCESS(Status)) return Status;
+    ...
     
     /* Close the handle to the control set */
     NtClose(KeyHandle);
