@@ -3170,6 +3170,9 @@ IopIsFirmwareMapperDisabled(VOID)
    return (KeyValue != 0) ? TRUE : FALSE;
 }
 
+
+//遍历HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\MultifunctionAdapter下面的设备
+
 NTSTATUS
 NTAPI
 INIT_FUNCTION
@@ -3181,7 +3184,7 @@ IopUpdateRootKey(VOID)
    OBJECT_ATTRIBUTES ObjectAttributes;
    HANDLE hEnum, hRoot;
    NTSTATUS Status;
-
+   //创建或打开..CurrentControlSet\Enum
    InitializeObjectAttributes(&ObjectAttributes, &EnumU, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
    Status = ZwCreateKey(&hEnum, KEY_CREATE_SUB_KEY, &ObjectAttributes, 0, NULL, 0, NULL);
    if (!NT_SUCCESS(Status))
@@ -3190,6 +3193,7 @@ IopUpdateRootKey(VOID)
       return Status;
    }
 
+   //创建或打开..CurrentControlSet\Enum\Root
    InitializeObjectAttributes(&ObjectAttributes, &RootPathU, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, hEnum, NULL);
    Status = ZwCreateKey(&hRoot, KEY_CREATE_SUB_KEY, &ObjectAttributes, 0, NULL, 0, NULL);
    ZwClose(hEnum);
@@ -3201,18 +3205,14 @@ IopUpdateRootKey(VOID)
 
    if (!IopIsFirmwareMapperDisabled())
    {
+       //打开..HARDWARE\DESCRIPTION\System\MultifunctionAdapter
         Status = IopOpenRegistryKeyEx(&hEnum, NULL, &MultiKeyPathU, KEY_ENUMERATE_SUB_KEYS);
-        if (!NT_SUCCESS(Status))
-        {
-            /* Nothing to do, don't return with an error status */
-            DPRINT("ZwOpenKey() failed with status 0x%08lx\n", Status);
-            ZwClose(hRoot);
-            return STATUS_SUCCESS;
-        }
+...
+        //把"硬件"下的信息（Config Data）搬到"系统"下
         Status = IopEnumerateDetectedDevices(
-            hEnum,
+            hEnum,//"硬件"下的东西..HARDWARE\DESCRIPTION\System\MultifunctionAdapter
             NULL,
-            hRoot,
+            hRoot,//"系统"下的东西..SYSTEM\CurrentControlSet\Enum\Root
             TRUE,
             NULL,
             0);
