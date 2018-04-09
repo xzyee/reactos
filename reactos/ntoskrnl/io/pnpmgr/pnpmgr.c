@@ -2671,8 +2671,11 @@ IopInitializePnpServices(IN PDEVICE_NODE DeviceNode)
    return IopTraverseDeviceTree(&Context);
 }
  
-//注册表信息的搬迁
-
+//枚举5种传统设备，并把它们的资源配置信息写到Enum\Root各自枚举设备的LogConf\BootConfig中：
+//查询HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\MultifunctionAdapter下的传统硬件，把他们的信息创建到Enum\Root下：
+//创建的信息有：
+//比如：..Enum\Root\*PNP030\0000\HardwareID，保存的是"*PNP0303\0"
+//     ..Enum\Root\*PNP030\0000\LogConf\BootConfig ,保存的二进制资源配置信息（集合起来的）
 static NTSTATUS INIT_FUNCTION
 IopEnumerateDetectedDevices(
    IN HANDLE hBaseKey, //HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\MultifunctionAdapter或其下面的子健
@@ -2975,13 +2978,13 @@ IopEnumerateDetectedDevices(
       /* Add the detected device to Root key */
       InitializeObjectAttributes(&ObjectAttributes, &HardwareIdKey, OBJ_KERNEL_HANDLE, hRootKey, NULL);
       Status = ZwCreateKey(
-         &hLevel1Key, //输出
+         &hLevel1Key, //输出，代表$hRootKey\$HardwareIdKey,比如：..Enum\Root\*PNP030
          KEY_CREATE_SUB_KEY,
          &ObjectAttributes,
          0,
-         NULL,
+         NULL, //Class
          ExpInTextModeSetup ? REG_OPTION_VOLATILE : 0,
-         NULL);
+         NULL);//Disposition
       if (!NT_SUCCESS(Status))
       {
          DPRINT("ZwCreateKey() failed with status 0x%08lx\n", Status);
@@ -2991,7 +2994,7 @@ IopEnumerateDetectedDevices(
       RtlInitUnicodeString(&Level2NameU, Level2Name);
       InitializeObjectAttributes(&ObjectAttributes, &Level2NameU, OBJ_KERNEL_HANDLE, hLevel1Key, NULL);
       Status = ZwCreateKey(
-         &hLevel2Key,
+         &hLevel2Key,//输出，代表$hRootKey\$HardwareIdKey\$DeviceIndex,比如：..Enum\Root\*PNP030\0000
          KEY_SET_VALUE | KEY_CREATE_SUB_KEY,
          &ObjectAttributes,
          0,
@@ -3007,7 +3010,8 @@ IopEnumerateDetectedDevices(
        
       //比如："发现KeyboardController #0000 *PNP0303"
       DPRINT("Found %wZ #%lu (%wZ)\n", &ValueName, DeviceIndex, &HardwareIdKey);
-       
+      
+       //比如：..Enum\Root\*PNP030\0000\HardwareID
       Status = ZwSetValueKey(hLevel2Key, &HardwareIDU, 0, REG_MULTI_SZ, pHardwareId->Buffer, pHardwareId->MaximumLength);
       if (!NT_SUCCESS(Status))
       {
@@ -3016,6 +3020,7 @@ IopEnumerateDetectedDevices(
          goto nextdevice;
       }
       /* Create 'LogConf' subkey */
+       //比如：..Enum\Root\*PNP030\0000\LogConf
       InitializeObjectAttributes(&ObjectAttributes, &LogConfU, OBJ_KERNEL_HANDLE, hLevel2Key, NULL);
       Status = ZwCreateKey(
          &hLogConf,
@@ -3053,6 +3058,7 @@ IopEnumerateDetectedDevices(
                        BootResourcesLength);
 
          /* Save boot resources to 'LogConf\BootConfig' */
+         //比如：..Enum\Root\*PNP030\0000\LogConf\BootConfig
          Status = ZwSetValueKey(hLogConf, &BootConfigU, 0, REG_RESOURCE_LIST, CmResourceList, BootResourcesLength + sizeof(ULONG));
          if (!NT_SUCCESS(Status))
          {
@@ -3166,7 +3172,7 @@ IopIsFirmwareMapperDisabled(VOID)
 
 
 //遍历HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\MultifunctionAdapter下面的设备
-
+//把5种传统设备的资源配置信息写到Enum\Root下，也相当于枚举
 NTSTATUS
 NTAPI
 INIT_FUNCTION
@@ -3202,7 +3208,7 @@ IopUpdateRootKey(VOID)
        //打开..HARDWARE\DESCRIPTION\System\MultifunctionAdapter
         Status = IopOpenRegistryKeyEx(&hEnum, NULL, &MultiKeyPathU, KEY_ENUMERATE_SUB_KEYS);
 ...
-        //把"硬件"下的信息（Config Data）搬到"系统"下
+        //把"硬件"下的信息（Config Data）搬到"系统"下，枚举那些传统设备到Enum\Root
         Status = IopEnumerateDetectedDevices(
             hEnum,//"硬件"下的东西..HARDWARE\DESCRIPTION\System\MultifunctionAdapter
             NULL,
