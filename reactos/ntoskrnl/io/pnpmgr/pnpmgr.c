@@ -1820,10 +1820,34 @@ IopQueryCompatibleIds(PDEVICE_NODE DeviceNode,
  *    Any errors that occur are logged instead so that all child services have a chance
  *    of being interrogated.
  */
+/*
+就是向刚创建的pdo发送irp包，通过返回的信息充实DeviceNode并写注册表：
+发IRP查询Locale
+发IRP查询DeviceID
+发IRP查询Capabilities
+发IRP查询InstanceID
+InstancePath=$DeviceID\$ParentIdPrefix\$InstanceID
+DeviceNode->InstancePath
+发IRP查询HardwareID,写注册表\$InstancePath下的HardwareID
+发IRP查询>CompatibleIds,写注册表\$InstancePath下的>CompatibleIds
+发IRP查询TextDescription,写注册表\InstancePath下的DeviceDesc，可能写为"Unknown device"
+发IRP查询LocationInformation，写注册表\$InstancePath下的LocationInformation
+发IRP查询BUS_INFORMATION，填充
+      DeviceNode->ChildBusNumber
+      DeviceNode->ChildInterfaceType
+      DeviceNode->ChildBusTypeIndex
+发IRP查询BootResources,填充DeviceNode->BootResources
+发IRP查询ResourceRequirements,填充DeviceNode-ResourceRequirements
+
+IopSetDeviceInstanceData(InstanceKey, DeviceNode);
+
+IopQueueTargetDeviceEvent(&GUID_DEVICE_ENUMERATED,&DeviceNode->InstancePath);
+
+*/
 
 NTSTATUS
 IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
-                                PVOID Context) //父node
+                                PVOID Context) //父node,除了用于判断直接父子关系外，基本没用到
 {
    IO_STATUS_BLOCK IoStatusBlock;
    PDEVICE_NODE ParentDeviceNode;
@@ -1889,14 +1913,15 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
    DPRINT("Sending IRP_MN_QUERY_ID.BusQueryDeviceID to device stack\n");
 
    Stack.Parameters.QueryId.IdType = BusQueryDeviceID;//BusQueryDeviceID
-   Status = IopInitiatePnpIrp(DeviceNode->PhysicalDeviceObject,
+   //下面irp虽然名义上向pdo所在的堆栈顶部发送，但目前只有pdo，因此直接被PhysicalDeviceObject处理了
+   Status = IopInitiatePnpIrp(DeviceNode->PhysicalDeviceObject, 
                               &IoStatusBlock,
                               IRP_MN_QUERY_ID,
                               &Stack);
    if (NT_SUCCESS(Status))
    {
       /* Copy the device id string */
-      wcscpy(InstancePath, (PWSTR)IoStatusBlock.Information);
+      wcscpy(InstancePath, (PWSTR)IoStatusBlock.Information);//InstancePath=$DeviceID
 
       /*
        * FIXME: Check for valid characters, if there is invalid characters
@@ -1913,7 +1938,7 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
 
    DPRINT("Sending IRP_MN_QUERY_CAPABILITIES to device stack (after enumeration)\n");
 
-   Status = IopQueryDeviceCapabilities(DeviceNode, &DeviceCapabilities);
+   Status = IopQueryDeviceCapabilities(DeviceNode, &DeviceCapabilities);//似乎也是pdo处理
    if (!NT_SUCCESS(Status))
    {
       DPRINT1("IopInitiatePnpIrp() failed (Status 0x%08lx)\n", Status);
@@ -1965,7 +1990,7 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
             wcscat(InstancePath, L"&");
       }
       if (IoStatusBlock.Information)
-         wcscat(InstancePath, (PWSTR)IoStatusBlock.Information);
+         wcscat(InstancePath, (PWSTR)IoStatusBlock.Information);//InstancePath=$DeviceID\$ParentIdPrefix\$InstanceID
 
       /*
        * FIXME: Check for valid characters, if there is invalid characters
@@ -2001,14 +2026,13 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
                     0);
    }
 
-   DeviceNode->InstancePath = InstancePathU;
-
+   DeviceNode->InstancePath = InstancePathU; //=$DeviceID\$ParentIdPrefix\$InstanceID
    DPRINT("InstancePath is %S\n", DeviceNode->InstancePath.Buffer);
 
    /*
     * Create registry key for the instance id, if it doesn't exist yet
     */
-   Status = IopCreateDeviceKeyPath(&DeviceNode->InstancePath, 0, &InstanceKey);
+   Status = IopCreateDeviceKeyPath(&DeviceNode->InstancePath, 0, &InstanceKey/*输出*/);
    if (!NT_SUCCESS(Status))
    {
       DPRINT1("Failed to create the instance key! (Status %lx)\n", Status);
@@ -2017,9 +2041,8 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
       return STATUS_SUCCESS;
    }
 
-   IopQueryHardwareIds(DeviceNode, InstanceKey);
-
-   IopQueryCompatibleIds(DeviceNode, InstanceKey);
+   IopQueryHardwareIds(DeviceNode, InstanceKey);//查询注册表得到HardwareId保存在DeviceNode中
+   IopQueryCompatibleIds(DeviceNode, InstanceKey);//查询注册表得到CompatibleIds保存在DeviceNode中
 
    DPRINT("Sending IRP_MN_QUERY_DEVICE_TEXT.DeviceTextDescription to device stack\n");
 
@@ -2041,10 +2064,10 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
          /* This key is overriden when a driver is installed. Don't write the
           * new description if another one already exists */
          Status = ZwSetValueKey(InstanceKey,
-                                &ValueName,
+                                &ValueName,//L"DeviceDesc"
                                 0,
                                 REG_SZ,
-                                (PVOID)IoStatusBlock.Information,
+                                (PVOID)IoStatusBlock.Information,//写入内存的文字
                                 ((ULONG)wcslen((PWSTR)IoStatusBlock.Information) + 1) * sizeof(WCHAR));
       }
       else
@@ -2053,10 +2076,10 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
          DPRINT("Driver didn't return DeviceDesc (Status 0x%08lx), so place unknown device there\n", Status);
 
          Status = ZwSetValueKey(InstanceKey,
-            &ValueName,
+            &ValueName,//$Instance\DeviceDesc
             0,
             REG_SZ,
-            DeviceDesc.Buffer,
+            DeviceDesc.Buffer,//L"Unknown device"
             DeviceDesc.MaximumLength);
 
          if (!NT_SUCCESS(Status))
@@ -2081,7 +2104,7 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
       DPRINT("LocationInformation: %S\n", (PWSTR)IoStatusBlock.Information);
       RtlInitUnicodeString(&ValueName, L"LocationInformation");
       Status = ZwSetValueKey(InstanceKey,
-         &ValueName,
+         &ValueName,//$Instance\LocationInformation
          0,
          REG_SZ,
          (PVOID)IoStatusBlock.Information,
@@ -2108,6 +2131,7 @@ IopActionInterrogateDeviceStack(PDEVICE_NODE DeviceNode,//子node
       PPNP_BUS_INFORMATION BusInformation =
          (PPNP_BUS_INFORMATION)IoStatusBlock.Information;
 
+     //充实->ChildBusNumber、->ChildInterfaceType、->ChildBusTypeIndex
       DeviceNode->ChildBusNumber = BusInformation->BusNumber;
       DeviceNode->ChildInterfaceType = BusInformation->LegacyBusType;
       DeviceNode->ChildBusTypeIndex = IopGetBusTypeGuidIndex(&BusInformation->BusTypeGuid);
