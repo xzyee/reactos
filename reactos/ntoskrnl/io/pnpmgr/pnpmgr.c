@@ -2670,21 +2670,23 @@ IopInitializePnpServices(IN PDEVICE_NODE DeviceNode)
 
    return IopTraverseDeviceTree(&Context);
 }
+ 
+//注册表信息的搬迁
 
 static NTSTATUS INIT_FUNCTION
 IopEnumerateDetectedDevices(
-   IN HANDLE hBaseKey,
-   IN PUNICODE_STRING RelativePath OPTIONAL,
-   IN HANDLE hRootKey,
+   IN HANDLE hBaseKey, //HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\MultifunctionAdapter或其下面的子健
+   IN PUNICODE_STRING RelativePath OPTIONAL,//子键名称
+   IN HANDLE hRootKey,//...Enum\Root
    IN BOOLEAN EnumerateSubKeys,
    IN PCM_FULL_RESOURCE_DESCRIPTOR ParentBootResources,
    IN ULONG ParentBootResourcesLength)
 {
-   UNICODE_STRING IdentifierU = RTL_CONSTANT_STRING(L"Identifier");
-   UNICODE_STRING HardwareIDU = RTL_CONSTANT_STRING(L"HardwareID");
-   UNICODE_STRING ConfigurationDataU = RTL_CONSTANT_STRING(L"Configuration Data");
-   UNICODE_STRING BootConfigU = RTL_CONSTANT_STRING(L"BootConfig");
-   UNICODE_STRING LogConfU = RTL_CONSTANT_STRING(L"LogConf");
+   UNICODE_STRING IdentifierU = RTL_CONSTANT_STRING(L"Identifier");//要读的信息
+   UNICODE_STRING ConfigurationDataU = RTL_CONSTANT_STRING(L"Configuration Data");//要读的信息
+   UNICODE_STRING HardwareIDU = RTL_CONSTANT_STRING(L"HardwareID");//要写的信息
+   UNICODE_STRING BootConfigU = RTL_CONSTANT_STRING(L"BootConfig");//要写的信息
+   UNICODE_STRING LogConfU = RTL_CONSTANT_STRING(L"LogConf");//要写的信息
    OBJECT_ATTRIBUTES ObjectAttributes;
    HANDLE hDevicesKey = NULL;
    HANDLE hDeviceKey = NULL;
@@ -2694,17 +2696,17 @@ IopEnumerateDetectedDevices(
    ULONG IndexDevice = 0;
    ULONG IndexSubKey;
    PKEY_BASIC_INFORMATION pDeviceInformation = NULL;
-   ULONG DeviceInfoLength = sizeof(KEY_BASIC_INFORMATION) + 50 * sizeof(WCHAR);
+   ULONG DeviceInfoLength = sizeof(KEY_BASIC_INFORMATION) + 50 * sizeof(WCHAR); //一个Key的名字，足够长
    PKEY_VALUE_PARTIAL_INFORMATION pValueInformation = NULL;
-   ULONG ValueInfoLength = sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 50 * sizeof(WCHAR);
+   ULONG ValueInfoLength = sizeof(KEY_VALUE_PARTIAL_INFORMATION) + 50 * sizeof(WCHAR); //一个Value的长度，不太够?
    UNICODE_STRING DeviceName, ValueName;
    ULONG RequiredSize;
    PCM_FULL_RESOURCE_DESCRIPTOR BootResources = NULL;
    ULONG BootResourcesLength;
    NTSTATUS Status;
 
-   const UNICODE_STRING IdentifierSerial = RTL_CONSTANT_STRING(L"SerialController");
-   UNICODE_STRING HardwareIdSerial = RTL_CONSTANT_STRING(L"*PNP0501\0");
+   const UNICODE_STRING IdentifierSerial = RTL_CONSTANT_STRING(L"SerialController");//如果找到这个键名称
+   UNICODE_STRING HardwareIdSerial = RTL_CONSTANT_STRING(L"*PNP0501\0"); //就在Enum\Root下面创建传统串口的子健
    static ULONG DeviceIndexSerial = 0;
    const UNICODE_STRING IdentifierKeyboard = RTL_CONSTANT_STRING(L"KeyboardController");
    UNICODE_STRING HardwareIdKeyboard = RTL_CONSTANT_STRING(L"*PNP0303\0");
@@ -2724,37 +2726,24 @@ IopEnumerateDetectedDevices(
    PUCHAR CmResourceList;
    ULONG ListCount;
 
+    //hDevicesKey=hBaseKey\RelativePath或者hBaseKey，这是为了能遍历子键的需要
     if (RelativePath)
     {
-        Status = IopOpenRegistryKeyEx(&hDevicesKey, hBaseKey, RelativePath, KEY_ENUMERATE_SUB_KEYS);
-        if (!NT_SUCCESS(Status))
-        {
-            DPRINT("ZwOpenKey() failed with status 0x%08lx\n", Status);
-            goto cleanup;
-        }
+        Status = IopOpenRegistryKeyEx(&hDevicesKey, hBaseKey/*父*/, RelativePath, KEY_ENUMERATE_SUB_KEYS);
+...
     }
     else
         hDevicesKey = hBaseKey;
 
-   pDeviceInformation = ExAllocatePool(PagedPool, DeviceInfoLength);
-   if (!pDeviceInformation)
-   {
-      DPRINT("ExAllocatePool() failed\n");
-      Status = STATUS_NO_MEMORY;
-      goto cleanup;
-   }
+   pDeviceInformation = ExAllocatePool(PagedPool, DeviceInfoLength);//先分配相当长保存子健(目录)的名称，实际不够也没关系
+...
 
-   pValueInformation = ExAllocatePool(PagedPool, ValueInfoLength);
-   if (!pValueInformation)
-   {
-      DPRINT("ExAllocatePool() failed\n");
-      Status = STATUS_NO_MEMORY;
-      goto cleanup;
-   }
+   pValueInformation = ExAllocatePool(PagedPool, ValueInfoLength);//先分配相当长（目录下的各种数据），实际不够也没关系
+...
 
    while (TRUE)
    {
-      Status = ZwEnumerateKey(hDevicesKey, IndexDevice, KeyBasicInformation, pDeviceInformation, DeviceInfoLength, &RequiredSize);
+      Status = ZwEnumerateKey(hDevicesKey, IndexDevice/*刚开始为0*/, KeyBasicInformation, pDeviceInformation, DeviceInfoLength, &RequiredSize);
       if (Status == STATUS_NO_MORE_ENTRIES)
          break;
       else if (Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_BUFFER_TOO_SMALL)
@@ -2770,14 +2759,11 @@ IopEnumerateDetectedDevices(
          }
          Status = ZwEnumerateKey(hDevicesKey, IndexDevice, KeyBasicInformation, pDeviceInformation, DeviceInfoLength, &RequiredSize);
       }
-      if (!NT_SUCCESS(Status))
-      {
-         DPRINT("ZwEnumerateKey() failed with status 0x%08lx\n", Status);
-         goto cleanup;
-      }
+...
       IndexDevice++;
 
       /* Open device key */
+      //可能是"0"、"1"...或者"SerialController"类似的子键名称
       DeviceName.Length = DeviceName.MaximumLength = (USHORT)pDeviceInformation->NameLength;
       DeviceName.Buffer = pDeviceInformation->Name;
 
@@ -2790,6 +2776,7 @@ IopEnumerateDetectedDevices(
       }
 
       /* Read boot resources, and add then to parent ones */
+       //读"Configuration Data"
       Status = ZwQueryValueKey(hDeviceKey, &ConfigurationDataU, KeyValuePartialInformation, pValueInformation, ValueInfoLength, &RequiredSize);
       if (Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_BUFFER_TOO_SMALL)
       {
@@ -2831,18 +2818,17 @@ IopEnumerateDetectedDevices(
             BootResourcesLength = ParentBootResourcesLength
             + pValueInformation->DataLength
                - Header;
-         BootResources = ExAllocatePool(PagedPool, BootResourcesLength);
-         if (!BootResources)
-         {
-            DPRINT("ExAllocatePool() failed\n");
-            goto nextdevice;
-         }
+         BootResources = ExAllocatePool(PagedPool, BootResourcesLength);//创建保存Configuration Data二进制数据的内存
+...
          if (ParentBootResourcesLength < sizeof(CM_FULL_RESOURCE_DESCRIPTOR))
          {
+            //这就是parent，所以ParentBootResourcesLength为0，等式成立
             RtlCopyMemory(BootResources, pValueInformation->Data, pValueInformation->DataLength);
          }
          else if (ParentBootResources->PartialResourceList.PartialDescriptors[ParentBootResources->PartialResourceList.Count - 1].Type == CmResourceTypeDeviceSpecific)
          {
+            //ParentBootResources的最后一个资源的类型是CmResourceTypeDeviceSpecific
+            //子键（子设备）的资源+父键（父设备）的资源
             RtlCopyMemory(BootResources, pValueInformation->Data, pValueInformation->DataLength);
             RtlCopyMemory(
                (PVOID)((ULONG_PTR)BootResources + pValueInformation->DataLength),
@@ -2852,6 +2838,8 @@ IopEnumerateDetectedDevices(
          }
          else
          {
+            //ParentBootResources的最后一个资源的类型不是CmResourceTypeDeviceSpecific
+            //子键的header+父键的资源+子键的资源
             RtlCopyMemory(BootResources, pValueInformation->Data, Header);
             RtlCopyMemory(
                (PVOID)((ULONG_PTR)BootResources + Header),
@@ -2865,12 +2853,12 @@ IopEnumerateDetectedDevices(
          }
       }
 
-      if (EnumerateSubKeys)
+      if (EnumerateSubKeys) //TURE or FALSE
       {
          IndexSubKey = 0;
          while (TRUE)
          {
-            Status = ZwEnumerateKey(hDeviceKey, IndexSubKey, KeyBasicInformation, pDeviceInformation, DeviceInfoLength, &RequiredSize);
+            Status = ZwEnumerateKey(hDeviceKey/*对子键进行枚举*/, IndexSubKey, KeyBasicInformation, pDeviceInformation, DeviceInfoLength, &RequiredSize);
             if (Status == STATUS_NO_MORE_ENTRIES)
                break;
             else if (Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_BUFFER_TOO_SMALL)
@@ -2896,8 +2884,8 @@ IopEnumerateDetectedDevices(
             DeviceName.Buffer = pDeviceInformation->Name;
 
             Status = IopEnumerateDetectedDevices(
-               hDeviceKey,
-               &DeviceName,
+               hDeviceKey, //parent
+               &DeviceName, //枚举DeviceName下的东西，有可能是我们感兴趣的"KeyboardController"等，如果遇到会写注册表
                hRootKey,
                TRUE,
                BootResources,
@@ -2909,6 +2897,8 @@ IopEnumerateDetectedDevices(
 
       /* Read identifier */
       Status = ZwQueryValueKey(hDeviceKey, &IdentifierU, KeyValuePartialInformation, pValueInformation, ValueInfoLength, &RequiredSize);
+      //                                    "Identifier"
+       
       if (Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_BUFFER_TOO_SMALL)
       {
          ExFreePool(pValueInformation);
@@ -2939,6 +2929,7 @@ IopEnumerateDetectedDevices(
       else
       {
          /* Assign hardware id to this device */
+         //比如：ValueName="ISA"
          ValueName.Length = ValueName.MaximumLength = (USHORT)pValueInformation->DataLength;
          ValueName.Buffer = (PWCHAR)pValueInformation->Data;
          if (ValueName.Length >= sizeof(WCHAR) && ValueName.Buffer[ValueName.Length / sizeof(WCHAR) - 1] == UNICODE_NULL)
@@ -2974,7 +2965,7 @@ IopEnumerateDetectedDevices(
       {
          /* Unknown key path */
          DPRINT("Unknown key path '%wZ'\n", RelativePath);
-         goto nextdevice;
+         goto nextdevice; //注意，不是我们感兴趣的设备，但不会写注册表！！！
       }
 
       /* Prepare hardware id key (hardware id value without final \0) */
@@ -2984,7 +2975,7 @@ IopEnumerateDetectedDevices(
       /* Add the detected device to Root key */
       InitializeObjectAttributes(&ObjectAttributes, &HardwareIdKey, OBJ_KERNEL_HANDLE, hRootKey, NULL);
       Status = ZwCreateKey(
-         &hLevel1Key,
+         &hLevel1Key, //输出
          KEY_CREATE_SUB_KEY,
          &ObjectAttributes,
          0,
@@ -2996,7 +2987,7 @@ IopEnumerateDetectedDevices(
          DPRINT("ZwCreateKey() failed with status 0x%08lx\n", Status);
          goto nextdevice;
       }
-      swprintf(Level2Name, L"%04lu", DeviceIndex);
+      swprintf(Level2Name, L"%04lu", DeviceIndex); //注意DeviceIndex是怎么来的
       RtlInitUnicodeString(&Level2NameU, Level2Name);
       InitializeObjectAttributes(&ObjectAttributes, &Level2NameU, OBJ_KERNEL_HANDLE, hLevel1Key, NULL);
       Status = ZwCreateKey(
@@ -3013,7 +3004,10 @@ IopEnumerateDetectedDevices(
          DPRINT("ZwCreateKey() failed with status 0x%08lx\n", Status);
          goto nextdevice;
       }
+       
+      //比如："发现KeyboardController #0000 *PNP0303"
       DPRINT("Found %wZ #%lu (%wZ)\n", &ValueName, DeviceIndex, &HardwareIdKey);
+       
       Status = ZwSetValueKey(hLevel2Key, &HardwareIDU, 0, REG_MULTI_SZ, pHardwareId->Buffer, pHardwareId->MaximumLength);
       if (!NT_SUCCESS(Status))
       {
