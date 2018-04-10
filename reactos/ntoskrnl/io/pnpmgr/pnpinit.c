@@ -243,7 +243,13 @@ Quickie:
     ExFreePool(KeyValueInformationGroupOrderList);
     return i;
 }
-
+ 
+/*
+打开注册表看看CurrentControlSet\Control\Class\{....}\Property存在不？
+加载下层驱动：IopAttachFilterDrivers
+加载驱动：IopInitializeDevice
+加载上层驱动：IopAttachFilterDrivers
+*/
 NTSTATUS
 NTAPI
 PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
@@ -260,44 +266,37 @@ PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
     PWCHAR Buffer;
     
     /* Open enumeration root key */
-    Status = IopOpenRegistryKeyEx(&EnumRootKey,
+    
+    Status = IopOpenRegistryKeyEx(&EnumRootKey,//输出，获得Enum的key
                                   NULL,
-                                  &EnumRoot,
+                                  &EnumRoot,//L"\\Registry\\Machine\\System\\CurrentControlSet\\Enum"
                                   KEY_READ);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("IopOpenRegistryKeyEx() failed with Status %08X\n", Status);
-        return Status;
-    }
+...
     
     /* Open instance subkey */
-    Status = IopOpenRegistryKeyEx(&SubKey,
+    Status = IopOpenRegistryKeyEx(&SubKey, //输出，获得instance的Key，比如：ACPI\PNP0303\0
                                   EnumRootKey,
-                                  &DeviceNode->InstancePath,
+                                  &DeviceNode->InstancePath,//比如："ACPI\PNP0303\0"
                                   KEY_READ);
     ZwClose(EnumRootKey);
-    if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("IopOpenRegistryKeyEx() failed with Status %08X\n", Status);
-        return Status;
-    }
+...
     
     /* Get class GUID */
     Status = IopGetRegistryValue(SubKey,
-                                 REGSTR_VAL_CLASSGUID,
+                                 REGSTR_VAL_CLASSGUID,//"ClassGUID"
                                  &KeyValueInformation);
     if (NT_SUCCESS(Status))
     {
-        /* Convert to unicode string */
+        /* Convert to unicode string,取得的$ClassGuid保存在ClassGuid中 */
         Buffer = (PVOID)((ULONG_PTR)KeyValueInformation + KeyValueInformation->DataOffset);
         PnpRegSzToString(Buffer, KeyValueInformation->DataLength, &ClassGuid.Length);
         ClassGuid.MaximumLength = (USHORT)KeyValueInformation->DataLength;
-        ClassGuid.Buffer = Buffer;
+        ClassGuid.Buffer = Buffer;//比如：{4d36e96b-e325-11ce-bfc1-08002be10318}
         
         /* Open the key */
-        Status = IopOpenRegistryKeyEx(&ControlKey,
+        Status = IopOpenRegistryKeyEx(&ControlKey,//...CurrentControlSet\Control\Class
                                       NULL,
-                                      &ControlClass,
+                                      &ControlClass,//
                                       KEY_READ);
         if (!NT_SUCCESS(Status))
         {
@@ -308,8 +307,8 @@ PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
         else
         {
             /* Open the class key */
-            Status = IopOpenRegistryKeyEx(&ClassKey,
-                                          ControlKey,
+            Status = IopOpenRegistryKeyEx(&ClassKey,//被打开的子键,比如：{4d36e96b-e325-11ce-bfc1-08002be10318}
+                                          ControlKey,//父key=...CurrentControlSet\Control\Class
                                           &ClassGuid,
                                           KEY_READ);
             ZwClose(ControlKey);
@@ -322,13 +321,13 @@ PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
         }
         
         /* Check if we made it till here */
-        if (ClassKey)
+        if (ClassKey) //如果键存在
         {
             /* Get the device properties */
-            RtlInitUnicodeString(&Properties, REGSTR_KEY_DEVICE_PROPERTIES);
+            RtlInitUnicodeString(&Properties, REGSTR_KEY_DEVICE_PROPERTIES/*"Properties"*/);
             Status = IopOpenRegistryKeyEx(&PropertiesKey,
-                                          ClassKey,
-                                          &Properties,
+                                          ClassKey,//父key={...Guid...}
+                                          &Properties,//"Properties"
                                           KEY_READ);
             ZwClose(ClassKey);
             if (!NT_SUCCESS(Status))
@@ -348,16 +347,16 @@ PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
     }
     
     /* Do ReactOS-style setup */
-    Status = IopAttachFilterDrivers(DeviceNode, TRUE);
+    Status = IopAttachFilterDrivers(DeviceNode, TRUE);//加载下层过滤驱动
     if (!NT_SUCCESS(Status))
     {
         IopRemoveDevice(DeviceNode);
         return Status;
     }
-    Status = IopInitializeDevice(DeviceNode, DriverObject);
+    Status = IopInitializeDevice(DeviceNode, DriverObject);//加载本驱动
     if (NT_SUCCESS(Status))
     {
-        Status = IopAttachFilterDrivers(DeviceNode, FALSE);
+        Status = IopAttachFilterDrivers(DeviceNode, FALSE);//加载上层过滤驱动
         if (!NT_SUCCESS(Status))
         {
             IopRemoveDevice(DeviceNode);
