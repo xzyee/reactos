@@ -208,9 +208,22 @@ IopCaptureUnicodeString(PUNICODE_STRING DstName, PUNICODE_STRING SrcName)
     return Status;
 }
 
+/*
+已知DeviceInstance，就是设备的名称，找到设备对象，然后调用函数获得Property
+比较简单的一个函数
+*/
 static NTSTATUS
 IopGetDeviceProperty(PPLUGPLAY_CONTROL_PROPERTY_DATA PropertyData)
 {
+/*
+typedef struct _PLUGPLAY_CONTROL_PROPERTY_DATA
+{
+    UNICODE_STRING DeviceInstance; //已知
+    ULONG Property; //已知
+    PVOID Buffer; //求
+    ULONG BufferSize;
+} PLUGPLAY_CONTROL_PROPERTY_DATA, *PPLUGPLAY_CONTROL_PROPERTY_DATA;
+*/
     PDEVICE_OBJECT DeviceObject = NULL;
     NTSTATUS Status;
     UNICODE_STRING DeviceInstance;
@@ -243,24 +256,19 @@ IopGetDeviceProperty(PPLUGPLAY_CONTROL_PROPERTY_DATA PropertyData)
     _SEH2_END;
 
     /* Get the device object */
-    DeviceObject = IopGetDeviceObjectFromDeviceInstance(&DeviceInstance);
+    DeviceObject = IopGetDeviceObjectFromDeviceInstance(&DeviceInstance/*字符串*/);
     ExFreePool(DeviceInstance.Buffer);
-    if (DeviceObject == NULL)
-    {
-        return STATUS_NO_SUCH_DEVICE;
-    }
+...
 
     Buffer = ExAllocatePool(NonPagedPool, BufferSize);
-    if (Buffer == NULL)
-    {
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
+...
 
-    Status = IoGetDeviceProperty(DeviceObject,
-                                 Property,
+    //获得属性
+    Status = IoGetDeviceProperty(DeviceObject,//pdo
+                                 Property,//枚举
                                  BufferSize,
-                                 Buffer,
-                                 &BufferSize);
+                                 Buffer,//输出到刚分配的内存中
+                                 &BufferSize);//输出
 
     ObDereferenceObject(DeviceObject);
 
