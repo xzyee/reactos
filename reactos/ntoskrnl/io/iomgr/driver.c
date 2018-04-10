@@ -5,7 +5,7 @@
  * PURPOSE:         Driver Object Management
  * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
  *                  Filip Navara (navaraf@reactos.org)
- *                  Herv� Poussineau (hpoussin@reactos.org)
+ *                  Hervé Poussineau (hpoussin@reactos.org)
  */
 
 /* INCLUDES *******************************************************************/
@@ -297,7 +297,10 @@ IopNormalizeImagePath(
  * Return Value
  *    Status
  */
-
+/*
+从注册表..\CurrentControlSet\Services\$Service找到驱动文件保存的路径和启动方式
+调用MmLoadSystemImage得到ModuleObject
+*/
 NTSTATUS FASTCALL
 IopLoadServiceModule(
    IN PUNICODE_STRING ServiceName,
@@ -319,7 +322,7 @@ IopLoadServiceModule(
       return STATUS_UNSUCCESSFUL;
    }
 
-   if (ExpInTextModeSetup)
+   if (ExpInTextModeSetup) //全局变量
    {
        /* We have no registry, but luckily we know where all the drivers are */
 
@@ -336,25 +339,15 @@ IopLoadServiceModule(
        RtlInitUnicodeString(&CCSName,
                             L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services");
        Status = IopOpenRegistryKeyEx(&CCSKey, NULL, &CCSName, KEY_READ);
-       if (!NT_SUCCESS(Status))
-       {
-           DPRINT1("IopOpenRegistryKeyEx() failed for '%wZ' with Status %08X\n",
-                   &CCSName, Status);
-           return Status;
-       }
-
+...
        /* Open service key */
        Status = IopOpenRegistryKeyEx(&ServiceKey, CCSKey, ServiceName, KEY_READ);
-       if (!NT_SUCCESS(Status))
-       {
-           DPRINT1("IopOpenRegistryKeyEx() failed for '%wZ' with Status %08X\n",
-                   ServiceName, Status);
-           ZwClose(CCSKey);
-           return Status;
-       }
+...
 
        /*
         * Get information about the service.
+        (1)ServiceStart,关于如何启动驱动
+        (2)ServiceImagePath，关于驱动映像文件在保存在什么地方
         */
 
        RtlZeroMemory(QueryTable, sizeof(QueryTable));
@@ -363,8 +356,7 @@ IopLoadServiceModule(
 
        QueryTable[0].Name = L"Start";
        QueryTable[0].Flags = RTL_QUERY_REGISTRY_DIRECT;
-       QueryTable[0].EntryContext = &ServiceStart;
-
+       QueryTable[0].EntryContext = &ServiceStart;//ULONG
        QueryTable[1].Name = L"ImagePath";
        QueryTable[1].Flags = RTL_QUERY_REGISTRY_DIRECT;
        QueryTable[1].EntryContext = &ServiceImagePath;
@@ -374,26 +366,15 @@ IopLoadServiceModule(
 
        ZwClose(ServiceKey);
        ZwClose(CCSKey);
-
-       if (!NT_SUCCESS(Status))
-       {
-          DPRINT1("RtlQueryRegistryValues() failed (Status %x)\n", Status);
-          return Status;
-       }
+...
    }
 
    /*
     * Normalize the image path for all later processing.
     */
 
-   Status = IopNormalizeImagePath(&ServiceImagePath, ServiceName);
-
-   if (!NT_SUCCESS(Status))
-   {
-      DPRINT("IopNormalizeImagePath() failed (Status %x)\n", Status);
-      return Status;
-   }
-
+   Status = IopNormalizeImagePath(&ServiceImagePath, ServiceName);//修正一下ServiceImagePath使其完整
+...
    /*
     * Case for disabled drivers
     */
@@ -406,7 +387,7 @@ IopLoadServiceModule(
    else
    {
       DPRINT("Loading module from %wZ\n", &ServiceImagePath);
-      Status = MmLoadSystemImage(&ServiceImagePath, NULL, NULL, 0, (PVOID)ModuleObject, &BaseAddress);
+      Status = MmLoadSystemImage(&ServiceImagePath, NULL, NULL, 0, (PVOID)ModuleObject/*输出*/, &BaseAddress/*输出*/);
       if (NT_SUCCESS(Status))
       {
           IopDisplayLoadingMessage(ServiceName);
