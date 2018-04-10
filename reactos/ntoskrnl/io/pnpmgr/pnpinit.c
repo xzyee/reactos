@@ -245,10 +245,11 @@ Quickie:
 }
  
 /*
-打开注册表看看CurrentControlSet\Control\Class\{....}\Property存在不？
-加载下层驱动：IopAttachFilterDrivers
-加载驱动：IopInitializeDevice
-加载上层驱动：IopAttachFilterDrivers
+1.打开注册表看看CurrentControlSet\Control\Class\{....}\Property存在不？
+2.加载下层filter驱动：IopAttachFilterDrivers
+3.加载驱动：IopInitializeDevice
+4.加载上层filter驱动：IopAttachFilterDrivers
+5.启动驱动：IopStartDevice
 */
 NTSTATUS
 NTAPI
