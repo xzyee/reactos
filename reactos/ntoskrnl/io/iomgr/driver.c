@@ -162,8 +162,8 @@ IopGetDriverObject(
 BOOLEAN
 NTAPI
 IopSuffixUnicodeString(
-    IN PCUNICODE_STRING String1,
-    IN PCUNICODE_STRING String2)
+    IN PCUNICODE_STRING String1, //比如：".bbb"
+    IN PCUNICODE_STRING String2) //比如："aaaa.bbb"
 {
     PWCHAR pc1;
     PWCHAR pc2;
@@ -437,7 +437,9 @@ MmFreeDriverInitialization(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
  *       On successful return this contains the driver object representing
  *       the loaded driver.
  */
-
+/*输入ModuleObject，得到DriverObject对象
+输入调用IopCreateDriver创建DriverObject对象
+*/
 NTSTATUS FASTCALL
 IopInitializeDriverModule(
    IN PDEVICE_NODE DeviceNode,
@@ -454,19 +456,17 @@ IopInitializeDriverModule(
    PDRIVER_OBJECT Driver;
    NTSTATUS Status;
 
-   DriverEntry = ModuleObject->EntryPoint;
-
+   DriverEntry = ModuleObject->EntryPoint;//重要
+   
    if (ServiceName != NULL && ServiceName->Length != 0)
    {
       RegistryKey.Length = 0;
       RegistryKey.MaximumLength = sizeof(ServicesKeyName) + ServiceName->Length;
       RegistryKey.Buffer = ExAllocatePool(PagedPool, RegistryKey.MaximumLength);
-      if (RegistryKey.Buffer == NULL)
-      {
-         return STATUS_INSUFFICIENT_RESOURCES;
-      }
+...
       RtlAppendUnicodeToString(&RegistryKey, ServicesKeyName);
-      RtlAppendUnicodeStringToString(&RegistryKey, ServiceName);
+      RtlAppendUnicodeStringToString(&RegistryKey, ServiceName);//比如："i8042prt"
+      //比如：现在RegistryKey="HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\services\i8042prt"
    }
    else
    {
@@ -477,27 +477,28 @@ IopInitializeDriverModule(
    if (ServiceName && ServiceName->Length > 0)
    {
       if (FileSystemDriver == TRUE)
-         wcscpy(NameBuffer, FILESYSTEM_ROOT_NAME);
+         wcscpy(NameBuffer, FILESYSTEM_ROOT_NAME);//L"\\FileSystem\\"
       else
-         wcscpy(NameBuffer, DRIVER_ROOT_NAME);
+         wcscpy(NameBuffer, DRIVER_ROOT_NAME);//L"\\Driver\\"
 
       RtlInitUnicodeString(&DriverName, NameBuffer);
       DriverName.MaximumLength = sizeof(NameBuffer);
 
       RtlAppendUnicodeStringToString(&DriverName, ServiceName);
-
+      //比如：现在DriverName="\FileSystem\i8042prt"
+      
       DPRINT("Driver name: '%wZ'\n", &DriverName);
    }
    else
       DriverName.Length = 0;
 
    Status = IopCreateDriver(
-       DriverName.Length > 0 ? &DriverName : NULL,
-       DriverEntry,
-       &RegistryKey,
-       ServiceName,
-       ModuleObject,
-       &Driver);
+       DriverName.Length > 0 ? &DriverName : NULL,//"\FileSystem\i8042prt"或者"\Driver\i8042prt"
+       DriverEntry,//ModuleObject->EntryPoint
+       &RegistryKey,//比如："HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\services\i8042prt"
+       ServiceName,//比如："i8042prt"
+       ModuleObject,//输入
+       &Driver);//输出
    RtlFreeUnicodeString(&RegistryKey);
 
    *DriverObject = Driver;
@@ -510,8 +511,8 @@ IopInitializeDriverModule(
    MmFreeDriverInitialization((PLDR_DATA_TABLE_ENTRY)Driver->DriverSection);
 
    /* Set the driver as initialized */
-   IopReadyDeviceObjects(Driver);
-
+   IopReadyDeviceObjects(Driver);// Set the driver and all devices as initialized
+ 
    if (PnpSystemInit) IopReinitializeDrivers();
 
    return STATUS_SUCCESS;
@@ -522,7 +523,11 @@ IopInitializeDriverModule(
  *
  * Internal routine used by IopAttachFilterDrivers.
  */
-
+/*
+IopLoadServiceModule得到ModuleObject
+IopInitializeDriverModule得到ModuleObject
+IopInitializeDevice加载AddDevice
+*/
 NTSTATUS NTAPI
 IopAttachFilterDriversCallback(
    PWSTR ValueName,
@@ -543,6 +548,7 @@ IopAttachFilterDriversCallback(
    if (ValueType == REG_NONE)
        return STATUS_SUCCESS;
 
+   //可能有多个过滤驱动，一个一个地处理
    for (Filters = ValueData;
         ((ULONG_PTR)Filters - (ULONG_PTR)ValueData) < ValueLength &&
         *Filters != 0;
@@ -554,24 +560,23 @@ IopAttachFilterDriversCallback(
       ServiceName.MaximumLength =
       ServiceName.Length = (USHORT)wcslen(Filters) * sizeof(WCHAR);
 
-       Status = IopGetDriverObject(&DriverObject,
-                                   &ServiceName,
+       Status = IopGetDriverObject(&DriverObject,//输出
+                                   &ServiceName,//各个过滤驱动的名字
                                    FALSE);
        if (!NT_SUCCESS(Status))
        {
            /* Load and initialize the filter driver */
-           Status = IopLoadServiceModule(&ServiceName, &ModuleObject);
+           Status = IopLoadServiceModule(&ServiceName, &ModuleObject/*输出*/);//得到ModuleObject
            if (!NT_SUCCESS(Status))
                return Status;
 
            Status = IopInitializeDriverModule(DeviceNode, ModuleObject, &ServiceName,
-                                              FALSE, &DriverObject);
+                                              FALSE, &DriverObject/*输出*/);//得到DriverObject
            if (!NT_SUCCESS(Status))
                return Status;
        }
 
-       Status = IopInitializeDevice(DeviceNode, DriverObject);
-
+       Status = IopInitializeDevice(DeviceNode, DriverObject);//调用过滤驱动的AddDevice
        /* Remove extra reference */
        ObDereferenceObject(DriverObject);
 
