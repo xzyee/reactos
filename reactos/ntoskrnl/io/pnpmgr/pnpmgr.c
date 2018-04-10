@@ -425,7 +425,7 @@ IopInitializeDevice(PDEVICE_NODE DeviceNode,
    DPRINT("Calling %wZ->AddDevice(%wZ)\n",
       &DriverObject->DriverName,
       &DeviceNode->InstancePath);
-   Status = DriverObject->DriverExtension->AddDevice( ///!!!
+   Status = DriverObject->DriverExtension->AddDevice( //调用驱动的AddDevice函数！！！
       DriverObject, DeviceNode->PhysicalDeviceObject);
    if (!NT_SUCCESS(Status))
    {
