@@ -42,6 +42,81 @@ IopInitializeArbiters(VOID)
     return STATUS_SUCCESS;
 }
 
+/*
+把ServiceGroupOrder的list取出来，放在PiInitGroupOrderTable地址
+我的电脑上list为：
+System Reserved
+360DsArk
+EMS
+WdfLoadGroup
+Boot Bus Extender
+System Bus Extender
+SCSI miniport
+Port
+Primary Disk
+SCSI Class
+SCSI CDROM Class
+FSFilter Infrastructure
+FSFilter System
+FSFilter Bottom
+FSFilter Copy Protection
+FSFilter Security Enhancer
+FSFilter Open File
+FSFilter Physical Quota Management
+FSFilter Virtualization
+FSFilter Encryption
+FSFilter Compression
+FSFilter Imaging
+FSFilter HSM
+FSFilter Cluster File System
+FSFilter System Recovery
+FSFilter Quota Management
+FSFilter Content Screener
+FSFilter Continuous Backup
+FSFilter Replication
+FSFilter Anti-Virus
+FSFilter Undelete
+FSFilter Activity Monitor
+FSFilter Top
+Filter
+Boot File System
+Base
+Pointer Port
+Keyboard Port
+Pointer Class
+Keyboard Class
+Video Init
+Video
+Video Save
+File System
+Streams Drivers
+NDIS Wrapper
+COM Infrastructure
+Event Log
+AudioGroup
+ProfSvc_Group
+UIGroup
+MS_WindowsLocalValidation
+PlugPlay
+Cryptography
+PNP_TDI
+NDIS
+TDI
+iSCSI
+NetBIOSGroup
+ShellSvcGroup
+SchedulerGroup
+SpoolerGroup
+SmartCardGroup
+NetworkProvider
+MS_WindowsRemoteValidation
+NetDDEGroup
+Parallel arbitrator
+Extended Base
+PCI Configuration
+MS Transactions
+
+*/
 NTSTATUS
 NTAPI
 INIT_FUNCTION
@@ -66,9 +141,9 @@ PiInitCacheGroupInformation(VOID)
     }
     
     /* Open the registry key */
-    Status = IopOpenRegistryKeyEx(&KeyHandle,
+    Status = IopOpenRegistryKeyEx(&KeyHandle,//...\Control\ServiceGroupOrder
                                   NULL,
-                                  &GroupString,
+                                  &GroupString, 
                                   KEY_READ);
     if (NT_SUCCESS(Status))
     {
@@ -107,6 +182,8 @@ PiInitCacheGroupInformation(VOID)
     return Status;
 }
 
+//通过ServiceHandle找到所属的Group，然后在cache中查找是第几个，cache就是PiInitGroupOrderTable全局变量
+//注意有些ServiceHandle没有Group
 USHORT
 NTAPI
 PpInitGetGroupOrderIndex(IN HANDLE ServiceHandle)
@@ -119,7 +196,7 @@ PpInitGetGroupOrderIndex(IN HANDLE ServiceHandle)
     PAGED_CODE();
        
     /* Make sure we have a cache */
-    if (!PiInitGroupOrderTable) return -1;
+    if (!PiInitGroupOrderTable) return -1;//要求cache存在
     
     /* If we don't have a handle, the rest is easy -- return the count */
     if (!ServiceHandle) return PiInitGroupOrderTableCount + 1;
@@ -150,6 +227,8 @@ PpInitGetGroupOrderIndex(IN HANDLE ServiceHandle)
     return i;
 }
 
+//从...Control\ServiceGroupOrder下找到某个服务对应的顺序Tag，在GroupOrder中的序号
+//GroupOrder为长整数数组，第一个为count，其他为tag
 USHORT
 NTAPI
 PipGetDriverTagPriority(IN HANDLE ServiceHandle)
@@ -166,14 +245,14 @@ PipGetDriverTagPriority(IN HANDLE ServiceHandle)
     USHORT i = -1;
     UNICODE_STRING GroupString =
     RTL_CONSTANT_STRING(L"\\Registry\\Machine\\System\\CurrentControlSet"
-                        L"\\Control\\ServiceGroupOrder");
+                        L"\\Control\\GroupOrderList");//修改一处错误，原文是ServiceGroupOrder
     
     /* Open the key */
     Status = IopOpenRegistryKeyEx(&KeyHandle, NULL, &GroupString, KEY_READ);
     if (!NT_SUCCESS(Status)) goto Quickie;
     
     /* Read the group */
-    Status = IopGetRegistryValue(ServiceHandle, L"Group", &KeyValueInformation);
+    Status = IopGetRegistryValue(ServiceHandle, L"Group", &KeyValueInformation);//读服务下Group的值，文本
     if (!NT_SUCCESS(Status)) goto Quickie;
     
     /* Make sure we have a group */
@@ -188,7 +267,7 @@ PipGetDriverTagPriority(IN HANDLE ServiceHandle)
     }
 
     /* Now read the tag */
-    Status = IopGetRegistryValue(ServiceHandle, L"Tag", &KeyValueInformationTag);
+    Status = IopGetRegistryValue(ServiceHandle, L"Tag", &KeyValueInformationTag);//读服务下Tag的值,数字
     if (!NT_SUCCESS(Status)) goto Quickie;
 
     /* Make sure we have a tag */
@@ -202,10 +281,16 @@ PipGetDriverTagPriority(IN HANDLE ServiceHandle)
     
     /* We can get rid of this now */
     ExFreePool(KeyValueInformationTag);
-
+    
+    //比如服务cdrom键下：
+    //    Group = "SCSI CDROM Class"
+    //    Tag = 3
+    
+    
     /* Now let's read the group's tag order */
-    Status = IopGetRegistryValue(KeyHandle,
-                                 Group.Buffer,
+    //下面有问题，因为Control\ServiceGroupOrder下，没有Group所指的name，只有list
+    Status = IopGetRegistryValue(KeyHandle, //...Control\ServiceGroupOrder
+                                 Group.Buffer,//比如"NDIS"
                                  &KeyValueInformationGroupOrderList);
     
     /* We can get rid of this now */
