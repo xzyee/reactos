@@ -16,7 +16,7 @@
 
 typedef struct _IOPNP_DEVICE_EXTENSION
 {
-    PWCHAR CompatibleIdList;
+    PWCHAR CompatibleIdList;//有什么用？
     ULONG CompatibleIdListSize;
 } IOPNP_DEVICE_EXTENSION, *PIOPNP_DEVICE_EXTENSION;
 
@@ -43,7 +43,9 @@ IopInitializeArbiters(VOID)
 }
 
 /*
-把ServiceGroupOrder的list取出来，放在PiInitGroupOrderTable地址
+把ServiceGroupOrder的list取出来，放在PiInitGroupOrderTable地址，当成cache
+就是把ServiceGroupOrder的一张表cache起来
+
 我的电脑上list为：
 System Reserved
 360DsArk
@@ -182,6 +184,7 @@ PiInitCacheGroupInformation(VOID)
     return Status;
 }
 
+//cache的应用
 //通过ServiceHandle找到所属的Group，然后在cache中查找是第几个，cache就是PiInitGroupOrderTable全局变量
 //注意有些ServiceHandle没有Group
 USHORT
@@ -227,8 +230,9 @@ PpInitGetGroupOrderIndex(IN HANDLE ServiceHandle)
     return i;
 }
 
-//从...Control\ServiceGroupOrder下找到某个服务对应的顺序Tag，在GroupOrder中的序号
-//GroupOrder为长整数数组，第一个为count，其他为tag
+
+//从...Control\\GroupOrderList下找到某个服务对应的顺序Tag，在\GroupOrderList中的序号
+//GroupOrder为长整数数组，第一个为count，其他为tag，这从注册表中可以得到证实
 USHORT
 NTAPI
 PipGetDriverTagPriority(IN HANDLE ServiceHandle)
@@ -330,6 +334,7 @@ Quickie:
 }
  
 /*
+调用驱动的AddDevice函数
 1.打开注册表看看CurrentControlSet\Control\Class\{....}\Property存在不？
 2.加载下层filter驱动：IopAttachFilterDrivers
 3.加载驱动：IopInitializeDevice，调用驱动的AddDevice函数
@@ -433,23 +438,23 @@ PipCallDriverAddDevice(IN PDEVICE_NODE DeviceNode,
     }
     
     /* Do ReactOS-style setup */
-    Status = IopAttachFilterDrivers(DeviceNode, TRUE);//加载下层过滤驱动
+    Status = IopAttachFilterDrivers(DeviceNode, TRUE);//加载下层过滤驱动模块并调用它们的AddDevice
     if (!NT_SUCCESS(Status))
     {
         IopRemoveDevice(DeviceNode);
         return Status;
     }
-    Status = IopInitializeDevice(DeviceNode, DriverObject);//加载本驱动
+    Status = IopInitializeDevice(DeviceNode, DriverObject);//加载本驱动的AddDevice
     if (NT_SUCCESS(Status))
     {
-        Status = IopAttachFilterDrivers(DeviceNode, FALSE);//加载上层过滤驱动
+        Status = IopAttachFilterDrivers(DeviceNode, FALSE);//加载上层过滤驱动模块并调用它们的AddDevice
         if (!NT_SUCCESS(Status))
         {
             IopRemoveDevice(DeviceNode);
             return Status;
         }
             
-        Status = IopStartDevice(DeviceNode);
+        Status = IopStartDevice(DeviceNode);//指定资源，创建control子键，在子键下面保存ActiveService为servicename
     }
     
     /* Return status */
@@ -465,6 +470,12 @@ CurrentControlSet已经存在
 创建CurrentControlSet\Enum
     CurrentControlSet\Enum\Root
     CurrentControlSet\Enum\HTREE\ROOT\0
+
+创建 root driver和root device
+IopRootDriverObject为root driver
+IopRootDeviceNode为保存root device的device node
+ 
+调用IopUpdateRootKey(),把一些信息搬到Enum中
 
 */
 NTSTATUS
@@ -615,7 +626,7 @@ IopInitializePlugPlayServices(VOID)
                                                     IopRootDeviceNode->PhysicalDeviceObject);
 
     /* Initialize PnP-Event notification support */
-    Status = IopInitPlugPlayEvents();
+    Status = IopInitPlugPlayEvents();//初始化IopPnpNotifyEvent而已
     ...
     
     /* Report the device to the user-mode pnp manager */
