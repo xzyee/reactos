@@ -750,6 +750,8 @@ IopStopDevice(
    return Status;
 }
 
+//指定资源
+//在注册表中保存ActiveService参数
 NTSTATUS
 IopStartDevice(
    PDEVICE_NODE DeviceNode)
@@ -770,7 +772,7 @@ IopStartDevice(
    IopStartAndEnumerateDevice(DeviceNode);
 
    /* FIX: Should be done in new device instance code */
-   Status = IopCreateDeviceKeyPath(&DeviceNode->InstancePath, 0, &InstanceHandle);
+   Status = IopCreateDeviceKeyPath(&DeviceNode->InstancePath/*注册表路径*/, 0, &InstanceHandle/*输出*/);
    if (!NT_SUCCESS(Status))
        goto ByeBye;
 
@@ -778,14 +780,16 @@ IopStartDevice(
    // {
    RtlInitUnicodeString(&KeyName, L"Control");
    InitializeObjectAttributes(&ObjectAttributes,
-                              &KeyName,
+                              &KeyName,//"Control"
                               OBJ_CASE_INSENSITIVE,
                               InstanceHandle,
                               NULL);
+   //创建在Instance键下创建Control
    Status = ZwCreateKey(&ControlHandle, KEY_SET_VALUE, &ObjectAttributes, 0, NULL, REG_OPTION_VOLATILE, NULL);
    if (!NT_SUCCESS(Status))
        goto ByeBye;
 
+   //在Control键下面保存ActiveService参数
    RtlInitUnicodeString(&KeyName, L"ActiveService");
    Status = ZwSetValueKey(ControlHandle, &KeyName, 0, REG_SZ, DeviceNode->ServiceName.Buffer, DeviceNode->ServiceName.Length);
    // }
