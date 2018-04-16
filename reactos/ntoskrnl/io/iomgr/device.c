@@ -131,6 +131,10 @@ IoShutdownPnpDevices(VOID)
     return;
 }
 
+/*
+phase0: 向ShutdownListHead表（SHUTDOWN_ENTRY结构）的所有设备对象同步发送pnp包（IRP_MJ_SHUTDOWN）
+phase1: 关闭存储(disk，cdrom，tape)系统，向LastChanceShutdownListHead表（SHUTDOWN_ENTRY结构）的所有设备对象同步发送pnp包（IRP_MJ_SHUTDOWN）
+*/
 VOID
 NTAPI
 IoShutdownSystem(IN ULONG Phase)
@@ -261,6 +265,11 @@ IoShutdownSystem(IN ULONG Phase)
     }
 }
 
+/*
+给定对象名称，使用ZwOpenFile打开对象，返回FileObject和DeviceObject
+先得到FileObject，再得到DeviceObject
+调用的函数：ObReferenceObjectByHandle、IoGetRelatedDeviceObject
+*/
 NTSTATUS
 NTAPI
 IopGetDeviceObjectPointer(IN PUNICODE_STRING ObjectName,
@@ -277,7 +286,7 @@ IopGetDeviceObjectPointer(IN PUNICODE_STRING ObjectName,
 
     /* Open the Device */
     InitializeObjectAttributes(&ObjectAttributes,
-                               ObjectName,
+                               ObjectName,//要打开设备的名称
                                OBJ_KERNEL_HANDLE,
                                NULL,
                                NULL);
@@ -309,6 +318,8 @@ IopGetDeviceObjectPointer(IN PUNICODE_STRING ObjectName,
     return Status;
 }
 
+//通过 DeviceExtension->AttachedTo一步步找到本堆栈最底层的DeviceObject，这应当是个pdo
+//被IoGetDeviceAttachmentBaseRef调用
 PDEVICE_OBJECT
 NTAPI
 IopGetLowestDevice(IN PDEVICE_OBJECT DeviceObject)
@@ -331,7 +342,8 @@ IopGetLowestDevice(IN PDEVICE_OBJECT DeviceObject)
     /* Return the lowest device */
     return LowestDevice;
 }
-
+ 
+//把DeviceObject从DriverObject->DeviceObject表中加入或者移出
 VOID
 NTAPI
 IopEditDeviceList(IN PDRIVER_OBJECT DriverObject,
