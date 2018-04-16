@@ -5,7 +5,7 @@
  * PURPOSE:         Device Object Management, including Notifications and Queues.
  * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
  *                  Filip Navara (navaraf@reactos.org)
- *                  Herv� Poussineau (hpoussin@reactos.org)
+ *                  Hervé Poussineau (hpoussin@reactos.org)
  */
 
 /* INCLUDES *******************************************************************/
@@ -26,6 +26,7 @@ extern ERESOURCE IopDatabaseResource;
 
 /* PRIVATE FUNCTIONS **********************************************************/
 
+//清除Driver创建的那些devobj的标志位为DO_DEVICE_INITIALIZING
 VOID
 NTAPI
 IopReadyDeviceObjects(IN PDRIVER_OBJECT Driver)
@@ -44,6 +45,7 @@ IopReadyDeviceObjects(IN PDRIVER_OBJECT Driver)
     }
 }
 
+//重要的是删除devicenode
 VOID
 NTAPI
 IopDeleteDevice(IN PVOID ObjectBody)
@@ -61,7 +63,11 @@ IopDeleteDevice(IN PVOID ObjectBody)
         ObDereferenceObject(DeviceObject->DriverObject);
 }
 
-
+ 
+/*
+把SourceDevice加盖在以TargetDevice为底部(pdo)的堆栈上，返回加盖以前的顶部设备对象
+如果加盖以前的顶部设备对象正在初始化或者正在卸载，那么将不会加盖，且返回NULL
+*/
 PDEVICE_OBJECT
 NTAPI
 IopAttachDeviceToDeviceStackSafe(IN PDEVICE_OBJECT SourceDevice,
@@ -72,7 +78,7 @@ IopAttachDeviceToDeviceStackSafe(IN PDEVICE_OBJECT SourceDevice,
     PEXTENDED_DEVOBJ_EXTENSION SourceDeviceExtension;
 
     /* Get the Attached Device and source extension */
-    AttachedDevice = IoGetAttachedDevice(TargetDevice);
+    AttachedDevice = IoGetAttachedDevice(TargetDevice); //获取现有顶层设备对象，Attached指向上一层
     SourceDeviceExtension = IoGetDevObjExtension(SourceDevice);
     ASSERT(SourceDeviceExtension->AttachedTo == NULL);
 
@@ -90,7 +96,7 @@ IopAttachDeviceToDeviceStackSafe(IN PDEVICE_OBJECT SourceDevice,
     else
     {
         /* Update atached device fields */
-        AttachedDevice->AttachedDevice = SourceDevice;
+        AttachedDevice->AttachedDevice = SourceDevice; //加盖一层
         AttachedDevice->Spare1++;
 
         /* Update the source with the attached data */
@@ -109,7 +115,7 @@ IopAttachDeviceToDeviceStackSafe(IN PDEVICE_OBJECT SourceDevice,
         }
 
         /* Set the attachment in the device extension */
-        SourceDeviceExtension->AttachedTo = AttachedDevice;
+        SourceDeviceExtension->AttachedTo = AttachedDevice;//AttachedTo指向下一层，注意和Attached的区别
     }
 
     /* Return the attached device */
