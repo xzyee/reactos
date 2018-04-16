@@ -45,7 +45,7 @@ IopReadyDeviceObjects(IN PDRIVER_OBJECT Driver)
     }
 }
 
-//重要的是删除devicenode
+//重要的是删除devicenode,通过DeviceObject找到devicenode
 VOID
 NTAPI
 IopDeleteDevice(IN PVOID ObjectBody)
@@ -65,8 +65,8 @@ IopDeleteDevice(IN PVOID ObjectBody)
 
  
 /*
-把SourceDevice加盖在以TargetDevice为底部(pdo)的堆栈上，返回加盖以前的顶部设备对象
-如果加盖以前的顶部设备对象正在初始化或者正在卸载，那么将不会加盖，且返回NULL
+把SourceDevice"加盖"在以TargetDevice为底部(pdo)的堆栈上，返回"加盖"以前的顶部设备对象
+如果"加盖"以前的顶部设备对象正在初始化或者正在卸载，那么将不会"加盖"，且返回NULL
 */
 PDEVICE_OBJECT
 NTAPI
@@ -266,7 +266,8 @@ IoShutdownSystem(IN ULONG Phase)
 }
 
 /*
-给定对象名称，使用ZwOpenFile打开对象，返回FileObject和DeviceObject
+给定设备名，返回FileObject和DeviceObject
+只要有设备名，就可以使用ZwOpenFile打开对象，
 先得到FileObject，再得到DeviceObject
 调用的函数：ObReferenceObjectByHandle、IoGetRelatedDeviceObject
 */
@@ -286,7 +287,7 @@ IopGetDeviceObjectPointer(IN PUNICODE_STRING ObjectName,
 
     /* Open the Device */
     InitializeObjectAttributes(&ObjectAttributes,
-                               ObjectName,//要打开设备的名称
+                               ObjectName,//要打开的设备名
                                OBJ_KERNEL_HANDLE,
                                NULL,
                                NULL);
