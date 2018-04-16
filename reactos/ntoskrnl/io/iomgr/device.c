@@ -390,6 +390,10 @@ IopEditDeviceList(IN PDRIVER_OBJECT DriverObject,
     }
 }
 
+//卸载设备对象
+//卸载一个DeviceObject相对简单，从DeviceObject->DriverObject表里移除
+//如果最后一个DeviceObject被移除，那么DriverObject留着也没什么用，卸载驱动
+//DriverObject->DriverUnload(DriverObject)
 VOID
 NTAPI
 IopUnloadDevice(IN PDEVICE_OBJECT DeviceObject)
@@ -400,13 +404,13 @@ IopUnloadDevice(IN PDEVICE_OBJECT DeviceObject)
     /* Check if deletion is pending */
     if (ThisExtension->ExtensionFlags & DOE_DELETE_PENDING)
     {
-        if (DeviceObject->AttachedDevice)
+        if (DeviceObject->AttachedDevice) //只能从最高层开始卸载，不能卸载中间层
         {
             DPRINT("Device object is in the middle of a device stack\n");
             return;
         }
 
-        if (DeviceObject->ReferenceCount)
+        if (DeviceObject->ReferenceCount) //有人还在用，延迟卸载
         {
             DPRINT("Device object still has %d references\n", DeviceObject->ReferenceCount);
             return;
@@ -420,8 +424,8 @@ IopUnloadDevice(IN PDEVICE_OBJECT DeviceObject)
         }
 
         /* Remove the device from the list */
-        IopEditDeviceList(DeviceObject->DriverObject, DeviceObject, IopRemove);
-
+        IopEditDeviceList(DeviceObject->DriverObject, DeviceObject, IopRemove); //从DeviceObject->DriverObject表中移除
+        
         /* Dereference the keep-alive */
         ObDereferenceObject(DeviceObject);
     }
@@ -456,11 +460,11 @@ IopUnloadDevice(IN PDEVICE_OBJECT DeviceObject)
     DriverObject->Flags |= DRVO_UNLOAD_INVOKED;
 
     /* Unload it */
-    DriverObject->DriverUnload(DriverObject);
-
+    DriverObject->DriverUnload(DriverObject);//调用驱动自己的函数，卸载驱动
     /* Make object temporary so it can be deleted */
     ObMakeTemporaryObject(DriverObject);
 }
+
 
 VOID
 NTAPI
@@ -486,6 +490,9 @@ IopDereferenceDeviceObject(IN PDEVICE_OBJECT DeviceObject,
     }
 }
 
+
+//从队列中取出来一个irp，设置其DeviceObject->CurrentIrp = Irp，
+//调用DeviceObject->DriverObject->DriverStartIo(DeviceObject, Irp);
 VOID
 NTAPI
 IopStartNextPacketByKey(IN PDEVICE_OBJECT DeviceObject,
@@ -582,7 +589,9 @@ IopStartNextPacket(IN PDEVICE_OBJECT DeviceObject,
         if (Cancelable) IoReleaseCancelSpinLock(OldIrql);
     }
 }
-
+ 
+//???
+//???
 VOID
 NTAPI
 IopStartNextPacketByKeyEx(IN PDEVICE_OBJECT DeviceObject,
@@ -652,7 +661,11 @@ IopStartNextPacketByKeyEx(IN PDEVICE_OBJECT DeviceObject,
         }
     }
 }
-
+ 
+//通过FileObject获得DeviceNode
+//显然，通过FileObject可以获得DeviceObject，向DeviceObject发送pnp取得DeviceRelations，
+//从而获得另一个堆栈的DeviceObject，这是个pdo
+//发送notify时有用
 NTSTATUS
 NTAPI
 IopGetRelatedTargetDevice(IN PFILE_OBJECT FileObject,
@@ -672,7 +685,7 @@ IopGetRelatedTargetDevice(IN PFILE_OBJECT FileObject,
     /* Define input parameters */
     Stack.MajorFunction = IRP_MJ_PNP;
     Stack.MinorFunction = IRP_MN_QUERY_DEVICE_RELATIONS;
-    Stack.Parameters.QueryDeviceRelations.Type = TargetDeviceRelation;
+    Stack.Parameters.QueryDeviceRelations.Type = TargetDeviceRelation;//只要求1个pdo
     Stack.FileObject = FileObject;
 
     /* Call the driver to query all relations (IRP_MJ_PNP) */
@@ -715,6 +728,7 @@ IopGetRelatedTargetDevice(IN PFILE_OBJECT FileObject,
  * Status
  *    @implemented
  */
+//一种attach的方式
 NTSTATUS
 NTAPI
 IoAttachDevice(PDEVICE_OBJECT SourceDevice,
@@ -728,27 +742,22 @@ IoAttachDevice(PDEVICE_OBJECT SourceDevice,
     /* Call the helper routine for an attach operation */
     Status = IopGetDeviceObjectPointer(TargetDeviceName,
                                        FILE_READ_ATTRIBUTES,
-                                       &FileObject,
-                                       &TargetDevice,
+                                       &FileObject, //输出，没什么用
+                                       &TargetDevice, //输出
                                        IO_ATTACH_DEVICE_API);
     if (!NT_SUCCESS(Status)) return Status;
 
     /* Attach the device */
     Status = IoAttachDeviceToDeviceStackSafe(SourceDevice,
                                              TargetDevice,
-                                             AttachedDevice);
-
+                                             AttachedDevice);//输出
+ 
     /* Dereference it */
     ObDereferenceObject(FileObject);
     return Status;
 }
 
-/*
- * IoAttachDeviceByPointer
- *
- * Status
- *    @implemented
- */
+//另一种attach的方式
 NTSTATUS
 NTAPI
 IoAttachDeviceByPointer(IN PDEVICE_OBJECT SourceDevice,
@@ -765,9 +774,7 @@ IoAttachDeviceByPointer(IN PDEVICE_OBJECT SourceDevice,
     return Status;
 }
 
-/*
- * @implemented
- */
+//另一种attach的方式
 PDEVICE_OBJECT
 NTAPI
 IoAttachDeviceToDeviceStack(IN PDEVICE_OBJECT SourceDevice,
@@ -779,9 +786,7 @@ IoAttachDeviceToDeviceStack(IN PDEVICE_OBJECT SourceDevice,
                                             NULL);
 }
 
-/*
- * @implemented
- */
+
 NTSTATUS
 NTAPI
 IoAttachDeviceToDeviceStackSafe(IN PDEVICE_OBJECT SourceDevice,
@@ -884,10 +889,9 @@ IoCreateDevice(IN PDRIVER_OBJECT DriverObject,
     AlignedDeviceExtensionSize = (DeviceExtensionSize + 7) &~ 7;
 
     /* Total Size */
-    TotalSize = AlignedDeviceExtensionSize +
-                sizeof(DEVICE_OBJECT) +
-                sizeof(EXTENDED_DEVOBJ_EXTENSION);
-
+    TotalSize = sizeof(DEVICE_OBJECT) +
+                AlignedDeviceExtensionSize +
+                sizeof(EXTENDED_DEVOBJ_EXTENSION); //可见DEVICE_OBJECT的内存布局
     /* Create the Device Object */
     *DeviceObject = NULL;
     Status = ObCreateObject(KernelMode,
@@ -908,7 +912,7 @@ IoCreateDevice(IN PDRIVER_OBJECT DriverObject,
      * Setup the Type and Size. Note that we don't use the aligned size,
      * because that's only padding for the DevObjExt and not part of the Object.
      */
-    CreatedDeviceObject->Type = IO_TYPE_DEVICE;
+    CreatedDeviceObject->Type = IO_TYPE_DEVICE; //最初值，以后能改吧
     CreatedDeviceObject->Size = sizeof(DEVICE_OBJECT) + (USHORT)DeviceExtensionSize;
 
     /* The kernel extension is after the driver internal extension */
@@ -994,7 +998,7 @@ IoCreateDevice(IN PDRIVER_OBJECT DriverObject,
     else
     {
         /* An actual Device, initialize its DQ */
-        KeInitializeDeviceQueue(&CreatedDeviceObject->DeviceQueue);
+        KeInitializeDeviceQueue(&CreatedDeviceObject->DeviceQueue);//重要
     }
 
     /* Insert the Object */
@@ -1101,9 +1105,9 @@ IoDetachDevice(IN PDEVICE_OBJECT TargetDevice)
 NTSTATUS
 NTAPI
 IoEnumerateDeviceObjectList(IN  PDRIVER_OBJECT DriverObject,
-                            IN  PDEVICE_OBJECT *DeviceObjectList,
+                            IN  PDEVICE_OBJECT *DeviceObjectList,//输出吧？
                             IN  ULONG DeviceObjectListSize,
-                            OUT PULONG ActualNumberDeviceObjects)
+                            OUT PULONG ActualNumberDeviceObjects)//输出
 {
     ULONG ActualDevices = 1;
     PDEVICE_OBJECT CurrentDevice = DriverObject->DeviceObject;
