@@ -1747,12 +1747,13 @@ IoRegisterDriverReinitialization(IN PDRIVER_OBJECT DriverObject,
 }
 
 /*
- * @implemented
+ * 创建驱动对象的扩展，因为每个驱动的要求的驱动扩展是不一样大小的，所以要指定其大小
+ * 从流程看，一个驱动对象可以有好几个驱动扩展（分饰不同角色？），但通常一个是足够的吧
  */
 NTSTATUS
 NTAPI
 IoAllocateDriverObjectExtension(IN PDRIVER_OBJECT DriverObject,
-                                IN PVOID ClientIdentificationAddress,
+                                IN PVOID ClientIdentificationAddress,//DriverObjectExtension的识别码,通常为DriverObject地址
                                 IN ULONG DriverObjectExtensionSize,
                                 OUT PVOID *DriverObjectExtension)
 {
@@ -1778,8 +1779,8 @@ IoAllocateDriverObjectExtension(IN PDRIVER_OBJECT DriverObject,
     OldIrql = KeRaiseIrqlToDpcLevel();
 
     /* Fill out the extension */
-    NewDriverExtension->ClientIdentificationAddress = ClientIdentificationAddress;
-
+    NewDriverExtension->ClientIdentificationAddress = ClientIdentificationAddress; //识别码
+   
     /* Loop the current extensions */
     DriverExtensions = IoGetDrvObjExtension(DriverObject)->
                        ClientDriverExtension;
