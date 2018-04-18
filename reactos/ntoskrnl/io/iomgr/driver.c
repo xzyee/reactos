@@ -1459,14 +1459,19 @@ IopReinitializeBootDrivers(VOID)
     }
 }
 
+/*
+创建一个Object，最后变成了pDriverObject
+如果没有给定驱动名称，则用时钟生成一个名字
+ModuleObject的用途是获得驱动的入口(DriverStart->DriverStart)和大小
+*/
 NTSTATUS
 NTAPI
 IopCreateDriver(IN PUNICODE_STRING DriverName OPTIONAL,
-                IN PDRIVER_INITIALIZE InitializationFunction,
-                IN PUNICODE_STRING RegistryPath,
+                IN PDRIVER_INITIALIZE InitializationFunction, //初始化回调
+                IN PUNICODE_STRING RegistryPath, //初始化回调的参数
                 IN PCUNICODE_STRING ServiceName,
                 PLDR_DATA_TABLE_ENTRY ModuleObject,
-                OUT PDRIVER_OBJECT *pDriverObject)
+                OUT PDRIVER_OBJECT *DriverStart)
 {
     WCHAR NameBuffer[100];
     USHORT NameLength;
@@ -1507,7 +1512,7 @@ try_again:
 
     /* Create the Object */
     Status = ObCreateObject(KernelMode,
-                            IoDriverObjectType,
+                            IoDriverObjectType,//枚举
                             &ObjectAttributes,
                             KernelMode,
                             NULL,
@@ -1524,15 +1529,15 @@ try_again:
     DriverObject->Type = IO_TYPE_DRIVER;
     DriverObject->Size = sizeof(DRIVER_OBJECT);
     DriverObject->Flags = DRVO_LEGACY_DRIVER;
-    DriverObject->DriverExtension = (PDRIVER_EXTENSION)(DriverObject + 1);
+    DriverObject->DriverExtension = (PDRIVER_EXTENSION)(DriverObject + 1);//PDRIVER_EXTENSION紧跟在DriverObject后面
     DriverObject->DriverExtension->DriverObject = DriverObject;
     DriverObject->DriverInit = InitializationFunction;
-    DriverObject->DriverSection = ModuleObject;
+    DriverObject->DriverSection = ModuleObject;//什么意思？
     /* Loop all Major Functions */
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
     {
         /* Invalidate each function */
-        DriverObject->MajorFunction[i] = IopInvalidDeviceRequest;
+        DriverObject->MajorFunction[i] = IopInvalidDeviceRequest;//stub
     }
 
     /* Set up the service key name buffer */
@@ -1575,8 +1580,8 @@ try_again:
                             FILE_READ_DATA,
                             0,
                             NULL,
-                            &hDriver);
-
+                            &hDriver);//输出，获得DriverObject的句柄
+   
     /* Eliminate small possibility when this function is called more than
        once in a row, and KeTickCount doesn't get enough time to change */
     if (!DriverName && (Status == STATUS_OBJECT_NAME_COLLISION) && (RetryCount < 100))
@@ -1613,7 +1618,7 @@ try_again:
     /* Finally, call its init function */
     DPRINT("RegistryKey: %wZ\n", RegistryPath);
     DPRINT("Calling driver entrypoint at %p\n", InitializationFunction);
-    Status = (*InitializationFunction)(DriverObject, RegistryPath);
+    Status = (*InitializationFunction)(DriverObject, RegistryPath);//调用初始化回调函数
     if (!NT_SUCCESS(Status))
     {
         /* If it didn't work, then kill the object */
@@ -1650,7 +1655,7 @@ try_again:
                     &DriverObject->DriverName, i);
 
             /* Fix it up */
-            DriverObject->MajorFunction[i] = IopInvalidDeviceRequest;
+            DriverObject->MajorFunction[i] = IopInvalidDeviceRequest;//stub
         }
     }
 
@@ -1669,7 +1674,7 @@ IoCreateDriver(IN PUNICODE_STRING DriverName OPTIONAL,
                IN PDRIVER_INITIALIZE InitializationFunction)
 {
    PDRIVER_OBJECT DriverObject;
-   return IopCreateDriver(DriverName, InitializationFunction, NULL, DriverName, NULL, &DriverObject);
+   return IopCreateDriver(DriverName, InitializationFunction, NULL/*RegistryPath*/, DriverName, NULL/*ModuleObject*/, &DriverObject);
 }
 
 /*
