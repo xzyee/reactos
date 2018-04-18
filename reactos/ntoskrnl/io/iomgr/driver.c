@@ -98,6 +98,7 @@ IopDeleteDriver(IN PVOID ObjectBody)
     }
 }
 
+//不是表面上看起来的Get，而是Open+引用
 NTSTATUS FASTCALL
 IopGetDriverObject(
    PDRIVER_OBJECT *DriverObject,
@@ -124,24 +125,24 @@ IopGetDriverObject(
    DriverName.MaximumLength = sizeof(NameBuffer);
 
    if (FileSystem == TRUE)
-      RtlAppendUnicodeToString(&DriverName, FILESYSTEM_ROOT_NAME);
+      RtlAppendUnicodeToString(&DriverName, FILESYSTEM_ROOT_NAME);//L"\\FileSystem\\"
    else
-      RtlAppendUnicodeToString(&DriverName, DRIVER_ROOT_NAME);
+      RtlAppendUnicodeToString(&DriverName, DRIVER_ROOT_NAME); //L"\\Driver\\"
    RtlAppendUnicodeStringToString(&DriverName, ServiceName);
 
    DPRINT("Driver name: '%wZ'\n", &DriverName);
 
    /* Open driver object */
    Status = ObReferenceObjectByName(
-      &DriverName,
+      &DriverName, //"\Driver\$ServiceName"或者"\FileSystem\$ServiceName"
       OBJ_OPENIF | OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, /* Attributes */
       NULL, /* PassedAccessState */
       0, /* DesiredAccess */
       IoDriverObjectType,
       KernelMode,
       NULL, /* ParseContext */
-      (PVOID*)&Object);
-
+      (PVOID*)&Object);//输出
+ 
    if (!NT_SUCCESS(Status))
    {
       DPRINT("Failed to reference driver object, status=0x%08x\n", Status);
