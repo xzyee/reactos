@@ -40,7 +40,7 @@ PLIST_ENTRY IopGroupTable;
 /* PRIVATE FUNCTIONS **********************************************************/
 
 NTSTATUS NTAPI
-IopInvalidDeviceRequest(
+IopInvalidDeviceRequest( //stub
    PDEVICE_OBJECT DeviceObject,
    PIRP Irp)
 {
@@ -50,6 +50,13 @@ IopInvalidDeviceRequest(
    return STATUS_INVALID_DEVICE_REQUEST;
 }
 
+/*
+此时 ，没有设备对象了，都删除了
+1、找出当前DriverObject对应的DriverExtension，即DriverObject->DriverExtension下面的PIO_CLIENT_EXTENSION串串
+把所有的PIO_CLIENT_EXTENSION结构都删除干净
+2、把DriverObject->DriverSection所指的image映像unload
+3、释放DriverExtension->ServiceKeyName
+*/
 VOID
 NTAPI
 IopDeleteDriver(IN PVOID ObjectBody)
@@ -235,7 +242,12 @@ IopDisplayLoadingMessage(PUNICODE_STRING ServiceName)
  * Remarks
  *    The input image path isn't freed on error.
  */
-
+ 
+/*
+构造ImagePath字符串:
+当ImagePath没东西时，输出为 "\\SystemRoot\\system32\\drivers\\xxx.sys"
+当ImagePath有西时，输出为 "\\SystemRoot\\"+ImagePath
+*/
 NTSTATUS
 FASTCALL
 IopNormalizeImagePath(
@@ -299,8 +311,9 @@ IopNormalizeImagePath(
  *    Status
  */
 /*
-从注册表..\CurrentControlSet\Services\$Service找到驱动文件保存的路径和启动方式
+从注册表..\CurrentControlSet\Services\$Service找到驱动文件保存的路径（ImagePath）和启动方式（ServiceStart）
 调用MmLoadSystemImage得到ModuleObject
+注意：ServiceStart >= 4的不会装载
 */
 NTSTATUS FASTCALL
 IopLoadServiceModule(
