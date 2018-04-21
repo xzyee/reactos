@@ -853,7 +853,7 @@ IopInitializeBuiltinDriver(IN PLDR_DATA_TABLE_ENTRY BootLdrEntry)
     NTSTATUS Status;
     PWCHAR FileNameWithoutPath;
     LPWSTR FileExtension;
-    PUNICODE_STRING ModuleName = &BootLdrEntry->BaseDllName;
+    PUNICODE_STRING ModuleName = &BootLdrEntry->BaseDllName;//模块名来自于此！
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     PLIST_ENTRY NextEntry;
     UNICODE_STRING ServiceName;
@@ -892,14 +892,11 @@ IopInitializeBuiltinDriver(IN PLDR_DATA_TABLE_ENTRY BootLdrEntry)
     * Determine the right device object
     */
    /* Use IopRootDeviceNode for now */
-   Status = IopCreateDeviceNode(IopRootDeviceNode, NULL, &ServiceName, &DeviceNode);
-   if (!NT_SUCCESS(Status))
-   {
-      DPRINT1("Driver '%wZ' load failed, status (%x)\n", ModuleName, Status);
-      return(Status);
-   }
+   Status = IopCreateDeviceNode(IopRootDeviceNode, NULL, &ServiceName/*上面构造的*/, &DeviceNode/*输出*/);
+...
 
    /* Lookup the new Ldr entry in PsLoadedModuleList */
+   //确信：名称为ModuleName的LdrEntry存在于全局PsLoadedModuleList中
    NextEntry = PsLoadedModuleList.Flink;
    while (NextEntry != &PsLoadedModuleList)
    {
@@ -919,18 +916,13 @@ IopInitializeBuiltinDriver(IN PLDR_DATA_TABLE_ENTRY BootLdrEntry)
     * Initialize the driver
     */
    Status = IopInitializeDriverModule(DeviceNode, LdrEntry,
-      &DeviceNode->ServiceName, FALSE, &DriverObject);
+      &DeviceNode->ServiceName, FALSE, &DriverObject);//创建DriverObject
+...
 
-   if (!NT_SUCCESS(Status))
-   {
-      IopFreeDeviceNode(DeviceNode);
-      return Status;
-   }
-
-   Status = IopInitializeDevice(DeviceNode, DriverObject);
+   Status = IopInitializeDevice(DeviceNode, DriverObject);//如果传统驱动，将不会做什么，只是设置标志DNF_ADDED + DNF_STARTED
    if (NT_SUCCESS(Status))
    {
-      Status = IopStartDevice(DeviceNode);
+      Status = IopStartDevice(DeviceNode);//启动设备：指定资源，发送IRP_MN_START_DEVICE
    }
 
    /* Remove extra reference from IopInitializeDriverModule */
@@ -950,6 +942,8 @@ IopInitializeBuiltinDriver(IN PLDR_DATA_TABLE_ENTRY BootLdrEntry)
  * Return Value
  *    None
  */
+//实质构造全局变量IopGroupTable
+//
 VOID
 FASTCALL
 INIT_FUNCTION
@@ -1016,6 +1010,7 @@ IopInitializeBootDrivers(VOID)
     if (IopGroupIndex == 0xFFFF) ASSERT(FALSE);
 
     /* Allocate the group table */
+    //注意IopGroupTable为全局变量
     IopGroupTable = ExAllocatePoolWithTag(PagedPool,
                                           IopGroupIndex * sizeof(LIST_ENTRY),//每一项都是一个独立的子串
                                           TAG_IO);
@@ -1047,7 +1042,7 @@ IopInitializeBootDrivers(VOID)
 
     /* 遍历2：Loop the boot drivers——BootDriverListHead 
     把BootDriverListHead里面的BOOT_DRIVER_LIST_ENTRY一个一个地抽出来，换成DRIVER_INFORMATION
-    结构，然后插入到IopGroupTable的某个节点代表的子串上面
+    结构，然后插入到全局变量IopGroupTable的某个节点代表的子串上面
     */
     ListHead = &KeLoaderBlock->BootDriverListHead;//全局变量KeLoaderBlock
     NextEntry = ListHead->Flink;
@@ -1075,14 +1070,14 @@ typedef struct _BOOT_DRIVER_LIST_ENTRY
 // Boot Driver List Entry
 typedef struct _DRIVER_INFORMATION
 {
-    LIST_ENTRY Link; //初始化
-    PDRIVER_OBJECT DriverObject;//NULL
+    LIST_ENTRY Link; //被链到全局变量IopGroupTable的某个节点（子串）
+    PDRIVER_OBJECT DriverObject;//=0
     PBOOT_DRIVER_LIST_ENTRY DataTableEntry; //KeLoaderBlock->BootDriverListHead所串起来的
     HANDLE ServiceHandle;//打开以后赋值,是HKEY_LOCAL_MACHINE\SYSTEM\ControlSetXXX\services下面的那些key
     USHORT TagPosition;//通过PipGetDriverTagPriority(ServiceHandle)获得
-    ULONG Failed;
-    ULONG Processed;
-    NTSTATUS Status;
+    ULONG Failed;//=0
+    ULONG Processed;//=0
+    NTSTATUS Status;//=0
 } DRIVER_INFORMATION, *PDRIVER_INFORMATION;
 */
         /* Allocate our internal accounting structure */
