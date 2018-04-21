@@ -231,14 +231,19 @@ PpInitGetGroupOrderIndex(IN HANDLE ServiceHandle)
 }
 
 
-//从...Control\\GroupOrderList下找到某个服务对应的顺序Tag，在\GroupOrderList中的序号
+//从...Control\GroupOrderList下找到某个服务对应的顺序Tag在\GroupOrderList中的索引（基于0）
+//1.ServiceHandle下面有两个数组需要读出来："group"、"tag"
+//2.Registry\Machine\System\CurrentControlSet\Control\GroupOrderList可得到GroupOrderList
+//3.使用"group"包含的数据（名称）从GroupOrderList下面找具体的group表（二进制数据）
+//4.比较tag相等，返回索引
 //GroupOrder为长整数数组，第一个为count，其他为tag，这从注册表中可以得到证实
+//ServiceHandle是HKEY_LOCAL_MACHINE\SYSTEM\ControlSetXXX\services下面的那些key
 USHORT
 NTAPI
 PipGetDriverTagPriority(IN HANDLE ServiceHandle)
 {
     NTSTATUS Status;
-    HANDLE KeyHandle = NULL;
+    HANDLE GroupOrderListKeyHandle = NULL;
     PKEY_VALUE_FULL_INFORMATION KeyValueInformation = NULL;
     PKEY_VALUE_FULL_INFORMATION KeyValueInformationTag;
     PKEY_VALUE_FULL_INFORMATION KeyValueInformationGroupOrderList;
@@ -252,7 +257,7 @@ PipGetDriverTagPriority(IN HANDLE ServiceHandle)
                         L"\\Control\\GroupOrderList");//修改一处错误，原文是ServiceGroupOrder
     
     /* Open the key */
-    Status = IopOpenRegistryKeyEx(&KeyHandle, NULL, &GroupString, KEY_READ);
+    Status = IopOpenRegistryKeyEx(&GroupOrderListKeyHandle, NULL, &GroupString, KEY_READ);
     if (!NT_SUCCESS(Status)) goto Quickie;
     
     /* Read the group */
@@ -293,14 +298,14 @@ PipGetDriverTagPriority(IN HANDLE ServiceHandle)
     
     /* Now let's read the group's tag order */
     //下面有问题，因为Control\ServiceGroupOrder下，没有Group所指的name，只有list
-    Status = IopGetRegistryValue(KeyHandle, //...Control\ServiceGroupOrder
+    Status = IopGetRegistryValue(GroupOrderListKeyHandle, //...Control\GroupOrderList
                                  Group.Buffer,//比如"NDIS"
                                  &KeyValueInformationGroupOrderList);
     
     /* We can get rid of this now */
 Quickie:
     if (KeyValueInformation) ExFreePool(KeyValueInformation);
-    if (KeyHandle) NtClose(KeyHandle);
+    if (GroupOrderListKeyHandle) NtClose(GroupOrderListKeyHandle);
     if (!NT_SUCCESS(Status)) return -1;
     
     /* We're on the success path -- validate the tag order*/
