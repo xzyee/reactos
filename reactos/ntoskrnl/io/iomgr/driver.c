@@ -1012,25 +1012,25 @@ IopInitializeBootDrivers(VOID)
     }
 
     /* Get highest group order index */
-    IopGroupIndex = PpInitGetGroupOrderIndex(NULL);
+    IopGroupIndex = PpInitGetGroupOrderIndex(NULL);//全局变量PiInitGroupOrderTableCount + 1
     if (IopGroupIndex == 0xFFFF) ASSERT(FALSE);
 
     /* Allocate the group table */
     IopGroupTable = ExAllocatePoolWithTag(PagedPool,
-                                          IopGroupIndex * sizeof(LIST_ENTRY),
+                                          IopGroupIndex * sizeof(LIST_ENTRY),//每一项都是一个独立的子串
                                           TAG_IO);
-    if (IopGroupTable == NULL) ASSERT(FALSE);
+...
 
     /* Initialize the group table lists */
     for (i = 0; i < IopGroupIndex; i++) InitializeListHead(&IopGroupTable[i]);
 
-    /* Loop the boot modules */
-    ListHead = &KeLoaderBlock->LoadOrderListHead;
+    /* 遍历1：Loop the boot modules——LoadOrderListHead */
+    ListHead = &KeLoaderBlock->LoadOrderListHead;//全局变量KeLoaderBlock
     NextEntry = ListHead->Flink;
     while (ListHead != NextEntry)
     {
         /* Get the entry */
-        LdrEntry = CONTAINING_RECORD(NextEntry,
+        LdrEntry = CONTAINING_RECORD(NextEntry, //取下一个完整的LDR_DATA_TABLE_ENTRY结构
                                      LDR_DATA_TABLE_ENTRY,
                                      InLoadOrderLinks);
 
@@ -1045,19 +1045,46 @@ IopInitializeBootDrivers(VOID)
         NextEntry = NextEntry->Flink;
     }
 
-    /* Loop the boot drivers */
-    ListHead = &KeLoaderBlock->BootDriverListHead;
+    /* 遍历2：Loop the boot drivers——BootDriverListHead 
+    把BootDriverListHead里面的BOOT_DRIVER_LIST_ENTRY一个一个地抽出来，换成DRIVER_INFORMATION
+    结构，然后插入到IopGroupTable的某个节点代表的子串上面
+    */
+    ListHead = &KeLoaderBlock->BootDriverListHead;//全局变量KeLoaderBlock
     NextEntry = ListHead->Flink;
     while (ListHead != NextEntry)
     {
         /* Get the entry */
         BootEntry = CONTAINING_RECORD(NextEntry,
-                                      BOOT_DRIVER_LIST_ENTRY,
+                                      BOOT_DRIVER_LIST_ENTRY,//看下面结构字段
                                       Link);
+/*
+typedef struct _BOOT_DRIVER_LIST_ENTRY
+{
+    LIST_ENTRY Link;
+    UNICODE_STRING FilePath;
+    UNICODE_STRING RegistryPath;//已经存在
+    struct _LDR_DATA_TABLE_ENTRY *LdrEntry;
+} BOOT_DRIVER_LIST_ENTRY, *PBOOT_DRIVER_LIST_ENTRY;
+*/
 
         /* Get the driver loader entry */
         LdrEntry = BootEntry->LdrEntry;
-
+       
+        //下面把LdrEntry改变为更易处理的DRIVER_INFORMATION
+ /*
+// Boot Driver List Entry
+typedef struct _DRIVER_INFORMATION
+{
+    LIST_ENTRY Link; //初始化
+    PDRIVER_OBJECT DriverObject;//NULL
+    PBOOT_DRIVER_LIST_ENTRY DataTableEntry; //KeLoaderBlock->BootDriverListHead所串起来的
+    HANDLE ServiceHandle;//打开以后赋值,是HKEY_LOCAL_MACHINE\SYSTEM\ControlSetXXX\services下面的那些key
+    USHORT TagPosition;//通过PipGetDriverTagPriority(ServiceHandle)获得
+    ULONG Failed;
+    ULONG Processed;
+    NTSTATUS Status;
+} DRIVER_INFORMATION, *PDRIVER_INFORMATION;
+*/
         /* Allocate our internal accounting structure */
         DriverInfo = ExAllocatePoolWithTag(PagedPool,
                                            sizeof(DRIVER_INFORMATION),
@@ -1078,11 +1105,10 @@ IopInitializeBootDrivers(VOID)
                 ((KeLoaderBlock->SetupLdrBlock) && ((KeyHandle = (PVOID)1)))) // yes, it's an assignment!
             {
                 /* Save the handle */
-                DriverInfo->ServiceHandle = KeyHandle;
+                DriverInfo->ServiceHandle = KeyHandle;//ServiceHandle是...\ControlSetXXX\services下面的那些key
 
                 /* Get the group oder index */
-                Index = PpInitGetGroupOrderIndex(KeyHandle);
-
+                Index = PpInitGetGroupOrderIndex(KeyHandle);//找出这个驱动在grouporderlist中的索引(基于0)
                 /* Get the tag position */
                 DriverInfo->TagPosition = PipGetDriverTagPriority(KeyHandle);
 
@@ -1117,7 +1143,7 @@ IopInitializeBootDrivers(VOID)
         NextEntry = NextEntry->Flink;
     }
 
-    /* Loop each group index */
+    /* 循环3：实质操作！装载那些驱动，Loop each group index */
     for (i = 0; i < IopGroupIndex; i++)
     {
         /* Loop each group table */
@@ -1133,8 +1159,10 @@ IopInitializeBootDrivers(VOID)
             LdrEntry = DriverInfo->DataTableEntry->LdrEntry;
 
             /* Initialize it */
-            IopInitializeBuiltinDriver(LdrEntry);
-
+           //================================================
+            IopInitializeBuiltinDriver(LdrEntry);//实质操作！！
+           //================================================
+           
             /* Next entry */
             NextEntry = NextEntry->Flink;
         }
