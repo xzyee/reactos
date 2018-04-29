@@ -105,7 +105,8 @@ IopDeleteDriver(IN PVOID ObjectBody)
     }
 }
 
-//不是表面上看起来的Get，而是Open+引用
+//不是表面上看起来的Get
+//ObReferenceObjectByName,对象名称为/"\Driver\$ServiceName"或者"\FileSystem\$ServiceName"
 NTSTATUS FASTCALL
 IopGetDriverObject(
    PDRIVER_OBJECT *DriverObject,
@@ -311,8 +312,8 @@ IopNormalizeImagePath(
  *    Status
  */
 /*
-从注册表..\CurrentControlSet\Services\$Service找到驱动文件保存的路径（ImagePath）和启动方式（ServiceStart）
-调用MmLoadSystemImage得到ModuleObject
+1.从注册表..\CurrentControlSet\Services\$Service找到驱动文件保存的路径（ImagePath）和启动方式（ServiceStart）
+2.调用MmLoadSystemImage得到ModuleObject
 注意：ServiceStart >= 4的不会装载
 */
 NTSTATUS FASTCALL
@@ -428,6 +429,7 @@ VOID
 NTAPI
 MmFreeDriverInitialization(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
 
+
 /*
  * IopInitializeDriverModule
  *
@@ -451,13 +453,13 @@ MmFreeDriverInitialization(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
  *       On successful return this contains the driver object representing
  *       the loaded driver.
  */
-/*输入ModuleObject，得到DriverObject对象
+/*通过ModuleObject创建DriverObject
 输入调用IopCreateDriver创建DriverObject对象
 */
 NTSTATUS FASTCALL
 IopInitializeDriverModule(
-   IN PDEVICE_NODE DeviceNode,
-   IN PLDR_DATA_TABLE_ENTRY ModuleObject,
+   IN PDEVICE_NODE DeviceNode,//pdo，子，正在为父创建drvobj
+   IN PLDR_DATA_TABLE_ENTRY ModuleObject,//可找到初始化函数即驱动入口DriverEntry
    IN PUNICODE_STRING ServiceName,
    IN BOOLEAN FileSystemDriver,
    OUT PDRIVER_OBJECT *DriverObject)
@@ -472,6 +474,7 @@ IopInitializeDriverModule(
 
    DriverEntry = ModuleObject->EntryPoint;//重要
    
+   //注意RegistryKey原来是在此创建的
    if (ServiceName != NULL && ServiceName->Length != 0)
    {
       RegistryKey.Length = 0;
@@ -487,7 +490,7 @@ IopInitializeDriverModule(
       RtlInitUnicodeString(&RegistryKey, NULL);
    }
 
-   /* Create ModuleName string */
+    //创建驱动名
    if (ServiceName && ServiceName->Length > 0)
    {
       if (FileSystemDriver == TRUE)
@@ -506,6 +509,7 @@ IopInitializeDriverModule(
    else
       DriverName.Length = 0;
 
+   //驱动名似乎都是"\FileSystem\$servername"或者"\Driver\$servername"的形式
    Status = IopCreateDriver(
        DriverName.Length > 0 ? &DriverName : NULL,//"\FileSystem\i8042prt"或者"\Driver\i8042prt"
        DriverEntry,//ModuleObject->EntryPoint
@@ -522,8 +526,8 @@ IopInitializeDriverModule(
       return Status;
    }
 
-   MmFreeDriverInitialization((PLDR_DATA_TABLE_ENTRY)Driver->DriverSection);
-
+   MmFreeDriverInitialization((PLDR_DATA_TABLE_ENTRY)Driver->DriverSection);//用不着了
+   
    /* Set the driver as initialized */
    IopReadyDeviceObjects(Driver);// Set the driver and all devices as initialized
  
@@ -541,6 +545,7 @@ IopInitializeDriverModule(
 IopLoadServiceModule得到ModuleObject
 IopInitializeDriverModule得到ModuleObject
 IopInitializeDevice加载AddDevice
+注意：可能有多个过滤驱动，按顺序循环加载它们
 */
 NTSTATUS NTAPI
 IopAttachFilterDriversCallback(
@@ -562,7 +567,7 @@ IopAttachFilterDriversCallback(
    if (ValueType == REG_NONE)
        return STATUS_SUCCESS;
 
-   //可能有多个过滤驱动，一个一个地处理
+   //可能有多个过滤驱动，按顺序循环加载它们
    for (Filters = ValueData;
         ((ULONG_PTR)Filters - (ULONG_PTR)ValueData) < ValueLength &&
         *Filters != 0;
@@ -612,6 +617,8 @@ IopAttachFilterDriversCallback(
  *       level filters.
  */
 
+//1. 加载实例的过滤驱动,在Enum\下面找到
+//2. 加载类驱动的过滤驱动，在Control\Class下面找到
 NTSTATUS FASTCALL
 IopAttachFilterDrivers(
    PDEVICE_NODE DeviceNode,
@@ -621,32 +628,20 @@ IopAttachFilterDrivers(
    UNICODE_STRING Class;
    WCHAR ClassBuffer[40];
    UNICODE_STRING EnumRoot = RTL_CONSTANT_STRING(ENUM_ROOT);
-   HANDLE EnumRootKey, SubKey;
+   HANDLE EnumRootKey,InstanceKey,ClassKey;
    NTSTATUS Status;
 
    /* Open enumeration root key */
-   Status = IopOpenRegistryKeyEx(&EnumRootKey, NULL,
-       &EnumRoot, KEY_READ);
-   if (!NT_SUCCESS(Status))
-   {
-       DPRINT1("ZwOpenKey() failed with Status %08X\n", Status);
-       return Status;
-   }
-
+   Status = IopOpenRegistryKeyEx(&EnumRootKey, NULL, &EnumRoot, KEY_READ);
+...
    /* Open subkey */
-   Status = IopOpenRegistryKeyEx(&SubKey, EnumRootKey,
-       &DeviceNode->InstancePath, KEY_READ);
-   if (!NT_SUCCESS(Status))
-   {
-       DPRINT1("ZwOpenKey() failed with Status %08X\n", Status);
-       ZwClose(EnumRootKey);
-       return Status;
-   }
+   Status = IopOpenRegistryKeyEx(&InstanceKey, EnumRootKey, &DeviceNode->InstancePath, KEY_READ);
+...
 
    /*
     * First load the device filters
     */
-   QueryTable[0].QueryRoutine = IopAttachFilterDriversCallback;
+   QueryTable[0].QueryRoutine = IopAttachFilterDriversCallback;//加载驱动的回调
    if (Lower)
      QueryTable[0].Name = L"LowerFilters";
    else
@@ -656,22 +651,14 @@ IopAttachFilterDrivers(
 
    Status = RtlQueryRegistryValues(
       RTL_REGISTRY_HANDLE,
-      (PWSTR)SubKey,
+      (PWSTR)InstanceKey,
       QueryTable,
       DeviceNode,
       NULL);
-   if (!NT_SUCCESS(Status))
-   {
-       DPRINT1("Failed to load device %s filters: %08X\n",
-         Lower ? "lower" : "upper", Status);
-       ZwClose(SubKey);
-       ZwClose(EnumRootKey);
-       return Status;
-   }
+...
 
-   /*
-    * Now get the class GUID
-    */
+   //到这里，过滤驱动已经加载了
+   //取得ClassGUID保存在Class中
    Class.Length = 0;
    Class.MaximumLength = 40 * sizeof(WCHAR);
    Class.Buffer = ClassBuffer;
@@ -682,24 +669,23 @@ IopAttachFilterDrivers(
 
    Status = RtlQueryRegistryValues(
       RTL_REGISTRY_HANDLE,
-      (PWSTR)SubKey,
+      (PWSTR)InstanceKey,
       QueryTable,
       DeviceNode,
       NULL);
 
    /* Close handles */
-   ZwClose(SubKey);
+   ZwClose(InstanceKey);
    ZwClose(EnumRootKey);
 
    /*
-    * Load the class filter driver
+    * 加载class filter driver
     */
    if (NT_SUCCESS(Status))
    {
        UNICODE_STRING ControlClass = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class");
 
-       Status = IopOpenRegistryKeyEx(&EnumRootKey, NULL,
-           &ControlClass, KEY_READ);
+       Status = IopOpenRegistryKeyEx(&EnumRootKey, NULL, &ControlClass, KEY_READ);
        if (!NT_SUCCESS(Status))
        {
            DPRINT1("ZwOpenKey() failed with Status %08X\n", Status);
@@ -707,8 +693,7 @@ IopAttachFilterDrivers(
        }
 
        /* Open subkey */
-       Status = IopOpenRegistryKeyEx(&SubKey, EnumRootKey,
-           &Class, KEY_READ);
+       Status = IopOpenRegistryKeyEx(&ClassKey, EnumRootKey, &Class, KEY_READ);
        if (!NT_SUCCESS(Status))
        {
            /* It's okay if there's no class key */
@@ -728,20 +713,20 @@ IopAttachFilterDrivers(
 
       Status = RtlQueryRegistryValues(
          RTL_REGISTRY_HANDLE,
-         (PWSTR)SubKey,
+         (PWSTR)ClassKey,
          QueryTable,
          DeviceNode,
          NULL);
 
       /* Clean up */
-      ZwClose(SubKey);
+      ZwClose(ClassKey);
       ZwClose(EnumRootKey);
 
       if (!NT_SUCCESS(Status))
       {
          DPRINT1("Failed to load class %s filters: %08X\n",
             Lower ? "lower" : "upper", Status);
-         ZwClose(SubKey);
+         ZwClose(ClassKey);
          ZwClose(EnumRootKey);
          return Status;
       }
