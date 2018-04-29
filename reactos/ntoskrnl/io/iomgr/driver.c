@@ -458,7 +458,7 @@ MmFreeDriverInitialization(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
 */
 NTSTATUS FASTCALL
 IopInitializeDriverModule(
-   IN PDEVICE_NODE DeviceNode,//pdo，子，正在为父创建drvobj
+   IN PDEVICE_NODE DeviceNode,//带有->ServiceName,没啥用
    IN PLDR_DATA_TABLE_ENTRY ModuleObject,//可找到初始化函数即驱动入口DriverEntry
    IN PUNICODE_STRING ServiceName,
    IN BOOLEAN FileSystemDriver,
@@ -744,15 +744,16 @@ MiResolveImageReferences(IN PVOID ImageBase,
                          OUT PWCHAR *MissingDriver,
                          OUT PLOAD_IMPORTS *LoadImports);
 
-//
+// 调用MiResolveImageReferences返回成功为成功
 // Used for images already loaded (boot drivers)
-//
+// The import resolving job and dependency loading is done by MiResolveImageReferences API.
+// *ModuleObject = LdrEntry;
 NTSTATUS
 NTAPI
 INIT_FUNCTION
 LdrProcessDriverModule(PLDR_DATA_TABLE_ENTRY LdrEntry,
                        PUNICODE_STRING FileName,
-                       PLDR_DATA_TABLE_ENTRY *ModuleObject)
+                       PLDR_DATA_TABLE_ENTRY *ModuleObject) //如成功将等于LdrEntry
 {
     NTSTATUS Status;
     UNICODE_STRING BaseName, BaseDirectory;
@@ -763,11 +764,7 @@ LdrProcessDriverModule(PLDR_DATA_TABLE_ENTRY LdrEntry,
 
     /* Allocate a buffer we'll use for names */
     Buffer = ExAllocatePoolWithTag(NonPagedPool, MAX_PATH, TAG_LDR_WSTR);
-    if (!Buffer)
-    {
-        /* Fail */
-        return STATUS_INSUFFICIENT_RESOURCES;
-    }
+...
 
     /* Check for a separator */
     if (FileName->Buffer[0] == OBJ_NAME_PATH_SEPARATOR)
@@ -776,8 +773,8 @@ LdrProcessDriverModule(PLDR_DATA_TABLE_ENTRY LdrEntry,
         ULONG BaseLength;
 
         /* Loop the path until we get to the base name */
-        p = &FileName->Buffer[FileName->Length / sizeof(WCHAR)];
-        while (*(p - 1) != OBJ_NAME_PATH_SEPARATOR) p--;
+        p = &FileName->Buffer[FileName->Length / sizeof(WCHAR)]; //指向最后
+        while (*(p - 1) != OBJ_NAME_PATH_SEPARATOR) p--; 
 
         /* Get the length */
         BaseLength = (ULONG)(&FileName->Buffer[FileName->Length / sizeof(WCHAR)] - p);
@@ -802,10 +799,12 @@ LdrProcessDriverModule(PLDR_DATA_TABLE_ENTRY LdrEntry,
     BaseDirectory.Length -= BaseName.Length;
     BaseDirectory.MaximumLength = BaseDirectory.Length;
 
+   //上面把Filename解析完了，FileName = BaseDirectory + BaseName
+   
     /* Resolve imports */
-    MissingApiName = Buffer;
-    Status = MiResolveImageReferences(DriverBase,
-                                      &BaseDirectory,
+    MissingApiName = Buffer; //暂时没东西
+    Status = MiResolveImageReferences(DriverBase, //LdrEntry->DllBase
+                                      &BaseDirectory, //上面得到的
                                       NULL,
                                       &MissingApiName,
                                       &MissingDriverName,
@@ -881,7 +880,7 @@ IopInitializeBuiltinDriver(IN PLDR_DATA_TABLE_ENTRY BootLdrEntry)
 ...
 
    /* Lookup the new Ldr entry in PsLoadedModuleList */
-   //确信：名称为ModuleName的LdrEntry存在于全局PsLoadedModuleList中
+   //验证一下名称为ModuleName的LdrEntry存在于全局PsLoadedModuleList中
    NextEntry = PsLoadedModuleList.Flink;
    while (NextEntry != &PsLoadedModuleList)
    {
@@ -927,7 +926,7 @@ IopInitializeBuiltinDriver(IN PLDR_DATA_TABLE_ENTRY BootLdrEntry)
  * Return Value
  *    None
  */
-//实质构造全局变量IopGroupTable
+//实质构造全局变量IopGroupTable并加载那些驱动
 //
 VOID
 FASTCALL
@@ -1152,6 +1151,7 @@ typedef struct _DRIVER_INFORMATION
     InitializeListHead(&KeLoaderBlock->LoadOrderListHead);
 }
 
+//调用CmGetSystemDriverList得到驱动表DriverList，然后顺序地调用ZwLoadDriver装载驱动
 VOID
 FASTCALL
 INIT_FUNCTION
