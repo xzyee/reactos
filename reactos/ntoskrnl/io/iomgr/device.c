@@ -26,7 +26,7 @@ extern ERESOURCE IopDatabaseResource;
 
 /* PRIVATE FUNCTIONS **********************************************************/
 
-//清除Driver创建的那些devobj的标志位为DO_DEVICE_INITIALIZING
+//清除Driver创建的那些devobj的标志位都设为DO_DEVICE_INITIALIZING
 VOID
 NTAPI
 IopReadyDeviceObjects(IN PDRIVER_OBJECT Driver)
@@ -392,8 +392,7 @@ IopEditDeviceList(IN PDRIVER_OBJECT DriverObject,
 
 //卸载设备对象
 //卸载一个DeviceObject相对简单，从DeviceObject->DriverObject表里移除
-//如果最后一个DeviceObject被移除，那么DriverObject留着也没什么用，卸载驱动
-//DriverObject->DriverUnload(DriverObject)
+//如果最后一个DeviceObject被移除，那么DriverObject留着也没什么用，卸载驱动，DriverObject->DriverUnload(DriverObject)
 VOID
 NTAPI
 IopUnloadDevice(IN PDEVICE_OBJECT DeviceObject)
@@ -663,8 +662,8 @@ IopStartNextPacketByKeyEx(IN PDEVICE_OBJECT DeviceObject,
 }
  
 //通过FileObject获得DeviceNode
-//显然，通过FileObject可以获得DeviceObject，向DeviceObject发送pnp取得DeviceRelations，
-//从而获得另一个堆栈的DeviceObject，这是个pdo
+//显然，通过FileObject可以获得DeviceObject，向DeviceObject发送pnp取得DeviceRelations（类型为TargetDeviceRelation），
+//从而可获得另一个堆栈的DeviceObject，这是个pdo
 //发送notify时有用
 NTSTATUS
 NTAPI
@@ -1609,6 +1608,8 @@ IoStartNextPacketByKey(IN PDEVICE_OBJECT DeviceObject,
 /*
  * @implemented
  */
+//实质调用子函数IopStartNextPacket或IopStartNextPacketByKeyEx
+//IopStartNextPacketByKeyEx的优势是能处理延迟的启动（deferred start），标志位为DOE_SIO_DEFERRED
 VOID
 NTAPI
 IoStartNextPacket(IN PDEVICE_OBJECT DeviceObject,
@@ -1638,6 +1639,11 @@ IoStartNextPacket(IN PDEVICE_OBJECT DeviceObject,
 /*
  * @implemented
  */
+//把irp扔给DeviceObject
+//1.组装CancelFunction到irp中
+//2.把irp插入到DeviceObject->DeviceQueue中
+//3.首次插入会调用DriverStartIo
+// 注意，这里面有取消函数的逻辑
 VOID
 NTAPI
 IoStartPacket(IN PDEVICE_OBJECT DeviceObject,
@@ -1645,7 +1651,7 @@ IoStartPacket(IN PDEVICE_OBJECT DeviceObject,
               IN PULONG Key,
               IN PDRIVER_CANCEL CancelFunction)
 {
-    BOOLEAN Stat;
+    BOOLEAN Inserted;
     KIRQL OldIrql, CancelIrql;
 
     /* Raise to dispatch level */
@@ -1663,23 +1669,25 @@ IoStartPacket(IN PDEVICE_OBJECT DeviceObject,
     if (Key)
     {
         /* Insert by key */
-        Stat = KeInsertByKeyDeviceQueue(&DeviceObject->DeviceQueue,
+        Inserted = KeInsertByKeyDeviceQueue(&DeviceObject->DeviceQueue,
                                         &Irp->Tail.Overlay.DeviceQueueEntry,
                                         *Key);
     }
     else
     {
         /* Insert without a key */
-        Stat = KeInsertDeviceQueue(&DeviceObject->DeviceQueue,
+        Inserted = KeInsertDeviceQueue(&DeviceObject->DeviceQueue,
                                    &Irp->Tail.Overlay.DeviceQueueEntry);
     }
-
+    
+    //如果设备忙，则Inserted=FALSE，不会插入，不过有意思的是，第一次插入会失败，就是队列刚初始化时候设备虽然不忙，但需要有一次转化为忙的过程
+    
     /* Check if this was a first insert */
-    if (!Stat)
+    if (!Inserted)
     {
-        /* Set the IRP */
-        DeviceObject->CurrentIrp = Irp;
-
+        //第一次插入
+        DeviceObject->CurrentIrp = Irp;//由于第一次插入显然DeviceObject->CurrentIrp没东西
+ 
         /* Check if this is a cancelable packet */
         if (CancelFunction)
         {
@@ -1688,7 +1696,8 @@ IoStartPacket(IN PDEVICE_OBJECT DeviceObject,
                 DOE_SIO_NO_CANCEL)
             {
                 /* He did, so remove the cancel routine */
-                Irp->CancelRoutine = NULL;
+                Irp->CancelRoutine = NULL; //发生了竞争，竞争的结果是我们赢了（我们总是赢，因为我们拿到锁），但需要我们
+                                           //把刚刚设置好的Irp->CancelRoutine归零，相当于后悔了一步
             }
 
             /* Release the cancel lock */
@@ -1710,6 +1719,7 @@ IoStartPacket(IN PDEVICE_OBJECT DeviceObject,
                  * Set the cancel IRQL, clear the currnet cancel routine and
                  * call ours
                  */
+                //发生了竞争，竞争的结果是我们赢了（我们总是赢，因为我们拿到锁），但需要我们调用取消函数，把这个刚刚插入队列的irp干掉
                 Irp->CancelIrql = CancelIrql;
                 Irp->CancelRoutine = NULL;
                 CancelFunction(DeviceObject, Irp);
