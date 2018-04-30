@@ -1205,9 +1205,10 @@ IopInitializeSystemDrivers(VOID)
  * To do
  *    Guard the whole function by SEH.
  */
-
+//unload的条件：DeviceObject->ReferenceCount==0，DeviceObject->AttachedDevice=NULL
 NTSTATUS NTAPI
-IopUnloadDriver(PUNICODE_STRING DriverServiceName, BOOLEAN UnloadPnpDrivers)
+IopUnloadDriver(PUNICODE_STRING DriverServiceName,  //注册表键：\Registry\Machine\System\CurrentControlSet\Services\XXXX
+                BOOLEAN UnloadPnpDrivers)
 {
    RTL_QUERY_REGISTRY_TABLE QueryTable[2];
    UNICODE_STRING ImagePath;
@@ -1245,14 +1246,14 @@ IopUnloadDriver(PUNICODE_STRING DriverServiceName, BOOLEAN UnloadPnpDrivers)
    ObjectName.MaximumLength = ObjectName.Length + sizeof(WCHAR);
    ObjectName.Buffer = ExAllocatePool(PagedPool, ObjectName.MaximumLength);
    if (!ObjectName.Buffer) return STATUS_INSUFFICIENT_RESOURCES;
-   wcscpy(ObjectName.Buffer, DRIVER_ROOT_NAME);
+   wcscpy(ObjectName.Buffer, DRIVER_ROOT_NAME); //"\Driver\"
    memcpy(ObjectName.Buffer + 8, Start, ObjectName.Length - 8 * sizeof(WCHAR));
    ObjectName.Buffer[ObjectName.Length/sizeof(WCHAR)] = 0;
 
    /*
     * Find the driver object
     */
-   Status = ObReferenceObjectByName(&ObjectName,
+   Status = ObReferenceObjectByName(&ObjectName, //驱动名称为："\Driver\XXX"
                                     0,
                                     0,
                                     0,
@@ -1366,7 +1367,7 @@ IopUnloadDriver(PUNICODE_STRING DriverServiceName, BOOLEAN UnloadPnpDrivers)
       if (PsGetCurrentProcess() == PsInitialSystemProcess)
       {
          /* Just call right away */
-         (*DriverObject->DriverUnload)(DriverObject);
+         (*DriverObject->DriverUnload)(DriverObject); //调用unload回调
       }
       else
       {
@@ -1409,6 +1410,7 @@ IopUnloadDriver(PUNICODE_STRING DriverServiceName, BOOLEAN UnloadPnpDrivers)
    }
 }
 
+//一一执行DriverReinitListHead所串起来的回调结构DRIVER_REINIT_ITEM
 VOID
 NTAPI
 IopReinitializeDrivers(VOID)
@@ -1445,6 +1447,8 @@ IopReinitializeDrivers(VOID)
     }
 }
 
+
+//一一执行DriverBootReinitListHead所串起来的回调结构DRIVER_REINIT_ITEM
 VOID
 NTAPI
 IopReinitializeBootDrivers(VOID)
@@ -1483,16 +1487,18 @@ IopReinitializeBootDrivers(VOID)
 
 /*
 创建一个Object，最后变成了pDriverObject
-如果没有给定驱动名称，则用时钟生成一个名字
+如果没有给定驱动名称，则通过时钟生成一个名字
 ModuleObject的用途是获得驱动的入口(DriverStart->DriverStart)和大小
+会调用驱动的DriverEntry（就是InitializationFunction）函数，如果在这个函数中创建了deviceobject,那么是一个传统驱动
+实际通过创建对象（ObCreateObject）来实现的
 */
 NTSTATUS
 NTAPI
 IopCreateDriver(IN PUNICODE_STRING DriverName OPTIONAL,
                 IN PDRIVER_INITIALIZE InitializationFunction, //初始化回调
-                IN PUNICODE_STRING RegistryPath, //初始化回调的参数
+                IN PUNICODE_STRING RegistryPath, //初始化回调的参数，传统的驱动不需要这个参数
                 IN PCUNICODE_STRING ServiceName,
-                PLDR_DATA_TABLE_ENTRY ModuleObject,
+                PLDR_DATA_TABLE_ENTRY ModuleObject,//传统驱动不需要这个参数
                 OUT PDRIVER_OBJECT *DriverStart)
 {
     WCHAR NameBuffer[100];
@@ -1523,7 +1529,9 @@ try_again:
         /* So we can avoid another code path, use a local var */
         LocalDriverName = *DriverName;
     }
-
+   
+   //无论如何我们有了一个驱动的名字了
+   
     /* Initialize the Attributes */
     ObjectSize = sizeof(DRIVER_OBJECT) + sizeof(EXTENDED_DRIVER_EXTENSION);
     InitializeObjectAttributes(&ObjectAttributes,
@@ -1538,22 +1546,22 @@ try_again:
                             &ObjectAttributes,
                             KernelMode,
                             NULL,
-                            ObjectSize,
+                            ObjectSize,//驱动对象和驱动扩展两者加起来的长度
                             0,
                             0,
-                            (PVOID*)&DriverObject);
+                            (PVOID*)&DriverObject);//输出
     if (!NT_SUCCESS(Status)) return Status;
 
     DPRINT("IopCreateDriver(): created DO %p\n", DriverObject);
 
     /* Set up the Object */
     RtlZeroMemory(DriverObject, ObjectSize);
-    DriverObject->Type = IO_TYPE_DRIVER;
+    DriverObject->Type = IO_TYPE_DRIVER;//IO性质的驱动
     DriverObject->Size = sizeof(DRIVER_OBJECT);
-    DriverObject->Flags = DRVO_LEGACY_DRIVER;
+    DriverObject->Flags = DRVO_LEGACY_DRIVER; //先指定为传统驱动再说，到底是不是，下面会修正
     DriverObject->DriverExtension = (PDRIVER_EXTENSION)(DriverObject + 1);//PDRIVER_EXTENSION紧跟在DriverObject后面
     DriverObject->DriverExtension->DriverObject = DriverObject;
-    DriverObject->DriverInit = InitializationFunction;
+    DriverObject->DriverInit = InitializationFunction;//DriverEntry函数
     DriverObject->DriverSection = ModuleObject;//什么意思？
     /* Loop all Major Functions */
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
@@ -1615,9 +1623,9 @@ try_again:
     if (!NT_SUCCESS(Status)) return Status;
 
     /* Now reference it */
-    Status = ObReferenceObjectByHandle(hDriver,
+    Status = ObReferenceObjectByHandle(hDriver,//上面刚刚获得
                                        0,
-                                       IoDriverObjectType,
+                                       IoDriverObjectType,//指明为驱动对象
                                        KernelMode,
                                        (PVOID*)&DriverObject,
                                        NULL);
@@ -1633,7 +1641,7 @@ try_again:
         return Status;
     }
 
-    DriverObject->HardwareDatabase = &IopHardwareDatabaseKey;
+    DriverObject->HardwareDatabase = &IopHardwareDatabaseKey; //\REGISTRY\MACHINE\HARDWARE\DESCRIPTION\SYSTEM
     DriverObject->DriverStart = ModuleObject ? ModuleObject->DllBase : 0;
     DriverObject->DriverSize = ModuleObject ? ModuleObject->SizeOfImage : 0;
 
@@ -1690,6 +1698,7 @@ try_again:
 /*
  * @implemented
  */
+//传统驱动才能调用这个函数，因为没有RegistryPath和ModuleObject参数
 NTSTATUS
 NTAPI
 IoCreateDriver(IN PUNICODE_STRING DriverName OPTIONAL,
@@ -1713,6 +1722,7 @@ IoDeleteDriver(IN PDRIVER_OBJECT DriverObject)
 /*
  * @implemented
  */
+//分配DRIVER_REINIT_ITEM结构串在DriverBootReinitListHead为头的串串中
 VOID
 NTAPI
 IoRegisterBootDriverReinitialization(IN PDRIVER_OBJECT DriverObject,
@@ -1742,6 +1752,7 @@ IoRegisterBootDriverReinitialization(IN PDRIVER_OBJECT DriverObject,
 /*
  * @implemented
  */
+//分配DRIVER_REINIT_ITEM结构串在DriverReinitListHead为头的串串中
 VOID
 NTAPI
 IoRegisterDriverReinitialization(IN PDRIVER_OBJECT DriverObject,
@@ -1885,6 +1896,13 @@ IoGetDriverObjectExtension(IN PDRIVER_OBJECT DriverObject,
     return DriverExtensions + 1;
 }
 
+//既可以装载驱动，也可以卸载驱动
+// LoadParams->DriverObject存在当然卸载驱动（调用DriverUnload）了，否则装载驱动
+// 从注册表找到驱动程序在哪儿，然后装载之
+//1.MmLoadSystemImage得到ModuleObject
+//2.IopCreateDeviceNode得到DeviceNode
+//3.IopInitializeDriverModule得到DriverObject，会创建RegistryKey
+//4.IopInitializeDevice初始化（AddDevice和attach）和启动设备
 VOID NTAPI
 IopLoadUnloadDriver(PLOAD_UNLOAD_PARAMS LoadParams)
 {
@@ -1906,7 +1924,7 @@ IopLoadUnloadDriver(PLOAD_UNLOAD_PARAMS LoadParams)
 
         /* Return success and signal the event */
         LoadParams->Status = STATUS_SUCCESS;
-        KeSetEvent(&LoadParams->Event, 0, FALSE);
+        KeSetEvent(&LoadParams->Event, 0, FALSE);//需要释放信号
         return;
     }
 
