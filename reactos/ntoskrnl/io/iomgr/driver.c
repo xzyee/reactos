@@ -37,6 +37,14 @@ extern BOOLEAN PnpSystemInit;
 USHORT IopGroupIndex;
 PLIST_ENTRY IopGroupTable;
 
+/*要查的注册表
+L"Start";
+L"ImagePath";//加载和卸载都要用
+L"LowerFilters";
+L"UpperFilters";
+L"ClassGUID"; //加载类驱动时需要
+L"Type";
+*/
 /* PRIVATE FUNCTIONS **********************************************************/
 
 NTSTATUS NTAPI
